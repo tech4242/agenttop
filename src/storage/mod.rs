@@ -392,9 +392,21 @@ impl Storage {
 
         let rows = stmt.query_map([], |row| {
             let last_call_str: Option<String> = row.get(2)?;
-            let last_call = last_call_str
-                .and_then(|s| DateTime::parse_from_rfc3339(&s).ok())
-                .map(|dt| dt.with_timezone(&Utc));
+            // DuckDB CAST(timestamp AS VARCHAR) produces "2026-01-18 21:03:57.123456"
+            // We need to parse this format, not RFC3339
+            let last_call = last_call_str.and_then(|s| {
+                // Try RFC3339 first (for backwards compatibility with stored RFC3339 strings)
+                DateTime::parse_from_rfc3339(&s)
+                    .map(|dt| dt.with_timezone(&Utc))
+                    .ok()
+                    .or_else(|| {
+                        // Try DuckDB's format: "2026-01-18 21:03:57.123456" or "2026-01-18 21:03:57"
+                        chrono::NaiveDateTime::parse_from_str(&s, "%Y-%m-%d %H:%M:%S%.f")
+                            .or_else(|_| chrono::NaiveDateTime::parse_from_str(&s, "%Y-%m-%d %H:%M:%S"))
+                            .ok()
+                            .map(|naive| naive.and_utc())
+                    })
+            });
 
             Ok(ToolMetrics {
                 tool_name: row.get(0)?,

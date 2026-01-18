@@ -63,32 +63,36 @@ impl App {
 
     fn sort_tools(&mut self) {
         let ascending = self.sort_ascending;
+        // All sorts use tool_name as secondary key for stability
         match self.sort_by {
             SortColumn::Calls => {
                 self.tool_metrics.sort_by(|a, b| {
-                    if ascending {
+                    let primary = if ascending {
                         a.call_count.cmp(&b.call_count)
                     } else {
                         b.call_count.cmp(&a.call_count)
-                    }
+                    };
+                    primary.then_with(|| a.tool_name.cmp(&b.tool_name))
                 });
             }
             SortColumn::LastCall => {
                 self.tool_metrics.sort_by(|a, b| {
-                    if ascending {
+                    let primary = if ascending {
                         a.last_call.cmp(&b.last_call)
                     } else {
                         b.last_call.cmp(&a.last_call)
-                    }
+                    };
+                    primary.then_with(|| a.tool_name.cmp(&b.tool_name))
                 });
             }
             SortColumn::AvgDuration => {
                 self.tool_metrics.sort_by(|a, b| {
-                    let ord = a
+                    let primary = a
                         .avg_duration_ms
                         .partial_cmp(&b.avg_duration_ms)
                         .unwrap_or(std::cmp::Ordering::Equal);
-                    if ascending { ord } else { ord.reverse() }
+                    let primary = if ascending { primary } else { primary.reverse() };
+                    primary.then_with(|| a.tool_name.cmp(&b.tool_name))
                 });
             }
             SortColumn::Name => {
