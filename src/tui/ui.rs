@@ -4,30 +4,26 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Cell, Clear, Gauge, Paragraph, Row, Table, TableState},
+    widgets::{Block, Borders, Cell, Clear, Paragraph, Row, Table, TableState},
 };
 
 use super::app::App;
-
-const TOKEN_LIMIT: u64 = 500_000; // Default context window estimate
 
 pub fn draw(f: &mut Frame, app: &App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3), // Header
-            Constraint::Length(3), // Token bar
-            Constraint::Length(2), // Token details
-            Constraint::Min(10),   // Tool table
-            Constraint::Length(1), // Footer
+            Constraint::Length(3), // Header with session info
+            Constraint::Length(3), // Metrics bar (tokens + tools summary)
+            Constraint::Min(8),    // Tool table
+            Constraint::Length(1), // Footer (hotkeys only)
         ])
         .split(f.area());
 
     draw_header(f, app, chunks[0]);
-    draw_token_bar(f, app, chunks[1]);
-    draw_token_details(f, app, chunks[2]);
-    draw_tool_table(f, app, chunks[3]);
-    draw_footer(f, app, chunks[4]);
+    draw_metrics_bar(f, app, chunks[1]);
+    draw_tool_table(f, app, chunks[2]);
+    draw_footer(f, chunks[3]);
 
     // Draw detail popup if active
     if app.show_detail {
@@ -46,61 +42,56 @@ fn draw_header(f: &mut Frame, app: &App, area: Rect) {
         format!("{}m", minutes)
     };
 
-    let cost = format!("${:.2}", app.token_metrics.total_cost_usd);
     let paused = if app.paused { " [PAUSED]" } else { "" };
 
-    let title = format!(" agenttop{} Session: {} | {} ", paused, session_time, cost);
+    let title = format!(" agenttop{}", paused);
+
+    let header_content = Line::from(vec![
+        Span::styled(
+            format!("{:>width$}", format!("Session: {}", session_time), width = area.width.saturating_sub(4) as usize),
+            Style::default().fg(Color::DarkGray),
+        ),
+    ]);
 
     let block = Block::default()
         .title(title)
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::Cyan));
 
-    f.render_widget(block, area);
+    let paragraph = Paragraph::new(header_content).block(block);
+    f.render_widget(paragraph, area);
 }
 
-fn draw_token_bar(f: &mut Frame, app: &App, area: Rect) {
-    let total = app.total_tokens();
-    let ratio = (total as f64 / TOKEN_LIMIT as f64).min(1.0);
-
-    let label = format!("Tokens [{}K/{}K]", total / 1000, TOKEN_LIMIT / 1000);
-
-    let gauge = Gauge::default()
-        .block(Block::default().borders(Borders::LEFT | Borders::RIGHT))
-        .gauge_style(
-            Style::default()
-                .fg(if ratio > 0.8 {
-                    Color::Red
-                } else if ratio > 0.6 {
-                    Color::Yellow
-                } else {
-                    Color::Green
-                })
-                .bg(Color::DarkGray),
-        )
-        .ratio(ratio)
-        .label(label);
-
-    f.render_widget(gauge, area);
-}
-
-fn draw_token_details(f: &mut Frame, app: &App, area: Rect) {
+fn draw_metrics_bar(f: &mut Frame, app: &App, area: Rect) {
     let cache_hit = app.cache_hit_rate();
+    let success_rate = app.overall_success_rate();
+    let avg_duration = app.average_tool_duration();
+    let total_calls = app.total_tool_calls();
 
-    let details = Line::from(vec![
-        Span::raw("        In: "),
+    // Format average duration
+    let avg_str = if avg_duration < 1000.0 {
+        format!("{}ms", avg_duration as u64)
+    } else {
+        format!("{:.1}s", avg_duration / 1000.0)
+    };
+
+    let metrics_line = Line::from(vec![
+        Span::raw(" Tokens  "),
+        Span::styled("In: ", Style::default().fg(Color::DarkGray)),
         Span::styled(
-            format!("{}K", app.token_metrics.input_tokens / 1000),
+            format!("{:.1}K", app.token_metrics.input_tokens as f64 / 1000.0),
             Style::default().fg(Color::Blue),
         ),
-        Span::raw(" | Out: "),
+        Span::raw("  "),
+        Span::styled("Out: ", Style::default().fg(Color::DarkGray)),
         Span::styled(
-            format!("{}K", app.token_metrics.output_tokens / 1000),
+            format!("{:.1}K", app.token_metrics.output_tokens as f64 / 1000.0),
             Style::default().fg(Color::Green),
         ),
-        Span::raw(" | Cache: "),
+        Span::raw("  "),
+        Span::styled("Cache: ", Style::default().fg(Color::DarkGray)),
         Span::styled(
-            format!("{}K", app.token_metrics.cache_read_tokens / 1000),
+            format!("{:.1}K", app.token_metrics.cache_read_tokens as f64 / 1000.0),
             Style::default().fg(Color::Magenta),
         ),
         Span::raw(" ("),
@@ -117,14 +108,42 @@ fn draw_token_details(f: &mut Frame, app: &App, area: Rect) {
         Span::raw(")"),
     ]);
 
-    let paragraph = Paragraph::new(details)
-        .block(Block::default().borders(Borders::LEFT | Borders::RIGHT | Borders::BOTTOM));
+    let tools_line = Line::from(vec![
+        Span::raw(" Tools   "),
+        Span::styled("Calls: ", Style::default().fg(Color::DarkGray)),
+        Span::styled(
+            total_calls.to_string(),
+            Style::default().fg(Color::Cyan),
+        ),
+        Span::raw("  "),
+        Span::styled("Success: ", Style::default().fg(Color::DarkGray)),
+        Span::styled(
+            format!("{:.1}%", success_rate),
+            Style::default().fg(if success_rate > 95.0 {
+                Color::Green
+            } else if success_rate > 80.0 {
+                Color::Yellow
+            } else {
+                Color::Red
+            }),
+        ),
+        Span::raw("  "),
+        Span::styled("Avg: ", Style::default().fg(Color::DarkGray)),
+        Span::styled(
+            avg_str,
+            Style::default().fg(Color::Blue),
+        ),
+    ]);
 
+    let block = Block::default()
+        .borders(Borders::LEFT | Borders::RIGHT);
+
+    let paragraph = Paragraph::new(vec![metrics_line, tools_line]).block(block);
     f.render_widget(paragraph, area);
 }
 
 fn draw_tool_table(f: &mut Frame, app: &App, area: Rect) {
-    let header_cells = ["TOOL", "CALLS", "LAST", "AVG", "STATUS"].iter().map(|h| {
+    let header_cells = ["TOOL", "CALLS", "SUCCESS", "AVG", "LAST", "STATUS"].iter().map(|h| {
         Cell::from(*h).style(
             Style::default()
                 .fg(Color::Yellow)
@@ -140,6 +159,13 @@ fn draw_tool_table(f: &mut Frame, app: &App, area: Rect) {
         .iter()
         .enumerate()
         .map(|(i, tool)| {
+            // Calculate success rate for this tool
+            let success_rate = if tool.call_count > 0 {
+                (tool.success_count as f64 / tool.call_count as f64) * 100.0
+            } else {
+                100.0
+            };
+
             // Calculate time since last call
             let last_str = match tool.last_call {
                 Some(last) => {
@@ -162,14 +188,14 @@ fn draw_tool_table(f: &mut Frame, app: &App, area: Rect) {
                 format!("{:.1}s", tool.avg_duration_ms / 1000.0)
             };
 
-            // Create status bar
+            // Create status bar (relative call frequency like htop CPU bars)
             let max_calls = app
                 .tool_metrics
                 .iter()
                 .map(|t| t.call_count)
                 .max()
                 .unwrap_or(1);
-            let bar_width = 20;
+            let bar_width = 10;
             let filled = ((tool.call_count as f64 / max_calls as f64) * bar_width as f64) as usize;
             let empty = bar_width - filled;
             let status_bar = format!("{}{}", "█".repeat(filled), "░".repeat(empty));
@@ -193,11 +219,21 @@ fn draw_tool_table(f: &mut Frame, app: &App, area: Rect) {
                 Style::default()
             };
 
+            // Success rate color
+            let success_style = if success_rate > 95.0 {
+                Style::default().fg(Color::Green)
+            } else if success_rate > 80.0 {
+                Style::default().fg(Color::Yellow)
+            } else {
+                Style::default().fg(Color::Red)
+            };
+
             Row::new(vec![
                 Cell::from(format!("{}{}", indicator, tool.tool_name)),
                 Cell::from(tool.call_count.to_string()),
-                Cell::from(last_str),
+                Cell::from(format!("{:.0}%", success_rate)).style(success_style),
                 Cell::from(avg_str),
+                Cell::from(last_str),
                 Cell::from(status_bar).style(Style::default().fg(Color::Cyan)),
             ])
             .style(style)
@@ -207,11 +243,12 @@ fn draw_tool_table(f: &mut Frame, app: &App, area: Rect) {
     let table = Table::new(
         rows,
         [
-            Constraint::Min(20),    // TOOL
-            Constraint::Length(8),  // CALLS
-            Constraint::Length(6),  // LAST
+            Constraint::Min(16),    // TOOL
+            Constraint::Length(7),  // CALLS
+            Constraint::Length(9),  // SUCCESS
             Constraint::Length(8),  // AVG
-            Constraint::Length(22), // STATUS
+            Constraint::Length(6),  // LAST
+            Constraint::Length(12), // STATUS
         ],
     )
     .header(header)
@@ -229,42 +266,10 @@ fn draw_tool_table(f: &mut Frame, app: &App, area: Rect) {
     f.render_stateful_widget(table, area, &mut state);
 }
 
-fn draw_footer(f: &mut Frame, app: &App, area: Rect) {
-    let productivity = app.productivity_multiplier();
-
+fn draw_footer(f: &mut Frame, area: Rect) {
     let footer = Line::from(vec![
-        Span::raw(" Productivity: "),
         Span::styled(
-            format!("{:.0}x", productivity),
-            Style::default().fg(Color::Green),
-        ),
-        Span::raw(" | Lines: "),
-        Span::styled(
-            format!("{:+}", app.session_metrics.lines_of_code),
-            Style::default().fg(if app.session_metrics.lines_of_code >= 0 {
-                Color::Green
-            } else {
-                Color::Red
-            }),
-        ),
-        Span::raw(" | Commits: "),
-        Span::styled(
-            app.session_metrics.commit_count.to_string(),
-            Style::default().fg(Color::Blue),
-        ),
-        Span::raw(" | PRs: "),
-        Span::styled(
-            app.session_metrics.pr_count.to_string(),
-            Style::default().fg(Color::Magenta),
-        ),
-        Span::raw(" | Tools: "),
-        Span::styled(
-            app.total_tool_calls().to_string(),
-            Style::default().fg(Color::Cyan),
-        ),
-        Span::raw("  "),
-        Span::styled(
-            "[q]uit [s]ort [p]ause [d]etail [r]eset",
+            " [q]uit [s]ort [p]ause [d]etail [r]eset",
             Style::default().fg(Color::DarkGray),
         ),
     ]);

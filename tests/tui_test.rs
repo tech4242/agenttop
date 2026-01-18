@@ -269,6 +269,69 @@ fn test_app_session_metrics() {
     assert_eq!(app.session_metrics.pr_count, 2);
 }
 
+/// Test overall success rate calculation
+#[test]
+fn test_app_overall_success_rate() {
+    let storage = StorageHandle::new_in_memory().unwrap();
+
+    storage.record_log_events(vec![
+        make_tool_event("Read", true, 50),
+        make_tool_event("Read", true, 50),
+        make_tool_event("Read", false, 50),
+        make_tool_event("Write", true, 100),
+        make_tool_event("Write", true, 100),
+    ]);
+    std::thread::sleep(std::time::Duration::from_millis(100));
+
+    let mut app = App::new(storage);
+    app.refresh().unwrap();
+
+    // 4 successes out of 5 calls = 80%
+    assert!((app.overall_success_rate() - 80.0).abs() < 0.1);
+}
+
+/// Test average tool duration calculation
+#[test]
+fn test_app_average_tool_duration() {
+    let storage = StorageHandle::new_in_memory().unwrap();
+
+    // Tool1: 2 calls @ 100ms avg = 200ms total
+    // Tool2: 3 calls @ 200ms avg = 600ms total
+    // Total: 5 calls, 800ms total = 160ms avg
+    storage.record_log_events(vec![
+        make_tool_event("Tool1", true, 100),
+        make_tool_event("Tool1", true, 100),
+        make_tool_event("Tool2", true, 200),
+        make_tool_event("Tool2", true, 200),
+        make_tool_event("Tool2", true, 200),
+    ]);
+    std::thread::sleep(std::time::Duration::from_millis(100));
+
+    let mut app = App::new(storage);
+    app.refresh().unwrap();
+
+    // Weighted average: (2*100 + 3*200) / 5 = 160ms
+    assert!((app.average_tool_duration() - 160.0).abs() < 0.1);
+}
+
+/// Test overall success rate with no tools returns 100%
+#[test]
+fn test_app_overall_success_rate_empty() {
+    let storage = StorageHandle::new_in_memory().unwrap();
+    let app = App::new(storage);
+
+    assert!((app.overall_success_rate() - 100.0).abs() < 0.1);
+}
+
+/// Test average tool duration with no tools returns 0
+#[test]
+fn test_app_average_tool_duration_empty() {
+    let storage = StorageHandle::new_in_memory().unwrap();
+    let app = App::new(storage);
+
+    assert!((app.average_tool_duration() - 0.0).abs() < 0.1);
+}
+
 /// Test cost is loaded correctly
 #[test]
 fn test_app_cost() {

@@ -177,12 +177,27 @@ impl App {
         self.tool_metrics.iter().map(|t| t.call_count).sum()
     }
 
-    pub fn productivity_multiplier(&self) -> f64 {
-        // Rough estimate: lines of code / hours worked
-        let hours = self.session_duration().num_seconds() as f64 / 3600.0;
-        if hours < 0.01 {
+    /// Calculate overall success rate across all tools (percentage)
+    pub fn overall_success_rate(&self) -> f64 {
+        let total_calls: u64 = self.tool_metrics.iter().map(|t| t.call_count).sum();
+        if total_calls == 0 {
+            return 100.0;
+        }
+        let total_success: u64 = self.tool_metrics.iter().map(|t| t.success_count).sum();
+        (total_success as f64 / total_calls as f64) * 100.0
+    }
+
+    /// Calculate average tool duration across all tools (weighted by call count)
+    pub fn average_tool_duration(&self) -> f64 {
+        let total_calls: u64 = self.tool_metrics.iter().map(|t| t.call_count).sum();
+        if total_calls == 0 {
             return 0.0;
         }
-        self.session_metrics.lines_of_code.abs() as f64 / hours
+        let weighted_sum: f64 = self
+            .tool_metrics
+            .iter()
+            .map(|t| t.avg_duration_ms * t.call_count as f64)
+            .sum();
+        weighted_sum / total_calls as f64
     }
 }
