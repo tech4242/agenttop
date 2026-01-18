@@ -62,6 +62,7 @@ async fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Resul
                 KeyCode::Char('s') => app.toggle_sort(),
                 KeyCode::Char('p') => app.toggle_pause(),
                 KeyCode::Char('d') => app.toggle_detail(),
+                KeyCode::Char('t') => app.toggle_time_filter(),
                 KeyCode::Char('r') => app.reset_stats(),
                 KeyCode::Up | KeyCode::Char('k') => app.select_previous(),
                 KeyCode::Down | KeyCode::Char('j') => app.select_next(),

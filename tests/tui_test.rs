@@ -4,7 +4,7 @@
 //! layer and can render data properly.
 
 use agenttop::storage::{LogEvent, StorageHandle};
-use agenttop::tui::app::{App, SortColumn};
+use agenttop::tui::app::{App, SortColumn, TimeFilter};
 use chrono::Utc;
 use ratatui::{Terminal, backend::TestBackend};
 use std::collections::HashMap;
@@ -251,24 +251,6 @@ fn test_app_total_tool_calls() {
     assert_eq!(app.total_tool_calls(), 6);
 }
 
-/// Test session metrics are loaded
-#[test]
-fn test_app_session_metrics() {
-    let storage = StorageHandle::new_in_memory().unwrap();
-
-    storage.record_session_metric("lines_of_code", 500);
-    storage.record_session_metric("commit", 5);
-    storage.record_session_metric("pull_request", 2);
-    std::thread::sleep(std::time::Duration::from_millis(100));
-
-    let mut app = App::new(storage);
-    app.refresh().unwrap();
-
-    assert_eq!(app.session_metrics.lines_of_code, 500);
-    assert_eq!(app.session_metrics.commit_count, 5);
-    assert_eq!(app.session_metrics.pr_count, 2);
-}
-
 /// Test overall success rate calculation
 #[test]
 fn test_app_overall_success_rate() {
@@ -497,4 +479,62 @@ fn test_ui_renders_small_terminal() {
 
     // Should not panic even on small terminal
     terminal.draw(|f| agenttop::tui::ui::draw(f, &app)).unwrap();
+}
+
+// =============================================================================
+// Time Filter Tests
+// =============================================================================
+
+/// Test time filter cycling
+#[test]
+fn test_app_time_filter_cycling() {
+    let storage = StorageHandle::new_in_memory().unwrap();
+    let mut app = App::new(storage);
+
+    // Default should be AllTime
+    assert_eq!(app.time_filter, TimeFilter::AllTime);
+
+    // Cycle through filters
+    app.toggle_time_filter();
+    assert_eq!(app.time_filter, TimeFilter::LastHour);
+
+    app.toggle_time_filter();
+    assert_eq!(app.time_filter, TimeFilter::Last24Hours);
+
+    app.toggle_time_filter();
+    assert_eq!(app.time_filter, TimeFilter::Last7Days);
+
+    app.toggle_time_filter();
+    assert_eq!(app.time_filter, TimeFilter::AllTime);
+}
+
+/// Test time filter labels
+#[test]
+fn test_time_filter_labels() {
+    assert_eq!(TimeFilter::LastHour.label(), "Last 1h");
+    assert_eq!(TimeFilter::Last24Hours.label(), "Last 24h");
+    assert_eq!(TimeFilter::Last7Days.label(), "Last 7d");
+    assert_eq!(TimeFilter::AllTime.label(), "All-time");
+}
+
+/// Test time filter since values
+#[test]
+fn test_time_filter_since() {
+    // AllTime should return None
+    assert!(TimeFilter::AllTime.since().is_none());
+
+    // Other filters should return Some datetime in the past
+    let now = Utc::now();
+
+    let last_hour = TimeFilter::LastHour.since().unwrap();
+    assert!(last_hour < now);
+    assert!((now - last_hour).num_minutes() >= 59);
+
+    let last_24h = TimeFilter::Last24Hours.since().unwrap();
+    assert!(last_24h < now);
+    assert!((now - last_24h).num_hours() >= 23);
+
+    let last_7d = TimeFilter::Last7Days.since().unwrap();
+    assert!(last_7d < now);
+    assert!((now - last_7d).num_days() >= 6);
 }

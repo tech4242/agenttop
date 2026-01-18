@@ -1,7 +1,36 @@
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 
-use crate::storage::{SessionMetrics, StorageHandle, TokenMetrics, ToolMetrics};
+use crate::storage::{StorageHandle, TokenMetrics, ToolMetrics};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TimeFilter {
+    LastHour,
+    Last24Hours,
+    Last7Days,
+    #[default]
+    AllTime,
+}
+
+impl TimeFilter {
+    pub fn label(&self) -> &'static str {
+        match self {
+            TimeFilter::LastHour => "Last 1h",
+            TimeFilter::Last24Hours => "Last 24h",
+            TimeFilter::Last7Days => "Last 7d",
+            TimeFilter::AllTime => "All-time",
+        }
+    }
+
+    pub fn since(&self) -> Option<DateTime<Utc>> {
+        match self {
+            TimeFilter::LastHour => Some(Utc::now() - chrono::Duration::hours(1)),
+            TimeFilter::Last24Hours => Some(Utc::now() - chrono::Duration::hours(24)),
+            TimeFilter::Last7Days => Some(Utc::now() - chrono::Duration::days(7)),
+            TimeFilter::AllTime => None,
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SortColumn {
@@ -15,13 +44,13 @@ pub struct App {
     storage: StorageHandle,
     pub tool_metrics: Vec<ToolMetrics>,
     pub token_metrics: TokenMetrics,
-    pub session_metrics: SessionMetrics,
     pub selected_index: usize,
     pub sort_by: SortColumn,
     pub sort_ascending: bool,
     pub paused: bool,
     pub show_detail: bool,
     pub last_refresh: DateTime<Utc>,
+    pub time_filter: TimeFilter,
 }
 
 impl App {
@@ -30,13 +59,13 @@ impl App {
             storage,
             tool_metrics: Vec::new(),
             token_metrics: TokenMetrics::default(),
-            session_metrics: SessionMetrics::default(),
             selected_index: 0,
             sort_by: SortColumn::Calls,
             sort_ascending: false,
             paused: false,
             show_detail: false,
             last_refresh: Utc::now(),
+            time_filter: TimeFilter::default(),
         }
     }
 
@@ -45,9 +74,8 @@ impl App {
             return Ok(());
         }
 
-        self.tool_metrics = self.storage.get_tool_metrics()?;
-        self.token_metrics = self.storage.get_token_metrics()?;
-        self.session_metrics = self.storage.get_session_metrics()?;
+        self.tool_metrics = self.storage.get_tool_metrics(self.time_filter.since())?;
+        self.token_metrics = self.storage.get_token_metrics(self.time_filter.since())?;
         self.last_refresh = Utc::now();
 
         // Sort the tools
@@ -161,8 +189,13 @@ impl App {
             + self.token_metrics.cache_creation_tokens
     }
 
-    pub fn session_duration(&self) -> chrono::Duration {
-        Utc::now() - self.session_metrics.start_time
+    pub fn toggle_time_filter(&mut self) {
+        self.time_filter = match self.time_filter {
+            TimeFilter::LastHour => TimeFilter::Last24Hours,
+            TimeFilter::Last24Hours => TimeFilter::Last7Days,
+            TimeFilter::Last7Days => TimeFilter::AllTime,
+            TimeFilter::AllTime => TimeFilter::LastHour,
+        };
     }
 
     pub fn cache_hit_rate(&self) -> f64 {

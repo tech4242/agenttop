@@ -32,24 +32,14 @@ pub fn draw(f: &mut Frame, app: &App) {
 }
 
 fn draw_header(f: &mut Frame, app: &App, area: Rect) {
-    let duration = app.session_duration();
-    let hours = duration.num_hours();
-    let minutes = duration.num_minutes() % 60;
-
-    let session_time = if hours > 0 {
-        format!("{}h {:02}m", hours, minutes)
-    } else {
-        format!("{}m", minutes)
-    };
-
     let paused = if app.paused { " [PAUSED]" } else { "" };
-
     let title = format!(" agenttop{}", paused);
 
+    let filter_label = format!("[{}]", app.time_filter.label());
     let header_content = Line::from(vec![
         Span::styled(
-            format!("{:>width$}", format!("Session: {}", session_time), width = area.width.saturating_sub(4) as usize),
-            Style::default().fg(Color::DarkGray),
+            format!("{:>width$}", filter_label, width = area.width.saturating_sub(4) as usize),
+            Style::default().fg(Color::Yellow),
         ),
     ]);
 
@@ -269,7 +259,7 @@ fn draw_tool_table(f: &mut Frame, app: &App, area: Rect) {
 fn draw_footer(f: &mut Frame, area: Rect) {
     let footer = Line::from(vec![
         Span::styled(
-            " [q]uit [s]ort [p]ause [d]etail [r]eset",
+            " [q]uit [s]ort [p]ause [d]etail [t]ime [r]eset",
             Style::default().fg(Color::DarkGray),
         ),
     ]);

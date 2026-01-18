@@ -27,27 +27,6 @@ pub struct TokenMetrics {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SessionMetrics {
-    pub start_time: DateTime<Utc>,
-    pub lines_of_code: i64,
-    pub commit_count: u64,
-    pub pr_count: u64,
-    pub active_time_seconds: u64,
-}
-
-impl Default for SessionMetrics {
-    fn default() -> Self {
-        Self {
-            start_time: Utc::now(),
-            lines_of_code: 0,
-            commit_count: 0,
-            pr_count: 0,
-            active_time_seconds: 0,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolEvent {
     pub timestamp: DateTime<Utc>,
     pub tool_name: String,
@@ -73,9 +52,14 @@ enum StorageCommand {
     RecordTokenUsage { token_type: String, count: u64 },
     RecordCost(f64),
     RecordSessionMetric { name: String, value: i64 },
-    GetToolMetrics(mpsc::Sender<Result<Vec<ToolMetrics>>>),
-    GetTokenMetrics(mpsc::Sender<Result<TokenMetrics>>),
-    GetSessionMetrics(mpsc::Sender<Result<SessionMetrics>>),
+    GetToolMetrics {
+        since: Option<DateTime<Utc>>,
+        tx: mpsc::Sender<Result<Vec<ToolMetrics>>>,
+    },
+    GetTokenMetrics {
+        since: Option<DateTime<Utc>>,
+        tx: mpsc::Sender<Result<TokenMetrics>>,
+    },
     Shutdown,
 }
 
@@ -139,21 +123,17 @@ impl StorageHandle {
         });
     }
 
-    pub fn get_tool_metrics(&self) -> Result<Vec<ToolMetrics>> {
+    pub fn get_tool_metrics(&self, since: Option<DateTime<Utc>>) -> Result<Vec<ToolMetrics>> {
         let (tx, rx) = mpsc::channel();
-        self.sender.send(StorageCommand::GetToolMetrics(tx))?;
+        self.sender
+            .send(StorageCommand::GetToolMetrics { since, tx })?;
         rx.recv()?
     }
 
-    pub fn get_token_metrics(&self) -> Result<TokenMetrics> {
+    pub fn get_token_metrics(&self, since: Option<DateTime<Utc>>) -> Result<TokenMetrics> {
         let (tx, rx) = mpsc::channel();
-        self.sender.send(StorageCommand::GetTokenMetrics(tx))?;
-        rx.recv()?
-    }
-
-    pub fn get_session_metrics(&self) -> Result<SessionMetrics> {
-        let (tx, rx) = mpsc::channel();
-        self.sender.send(StorageCommand::GetSessionMetrics(tx))?;
+        self.sender
+            .send(StorageCommand::GetTokenMetrics { since, tx })?;
         rx.recv()?
     }
 }
@@ -186,14 +166,11 @@ fn run_storage_actor(storage: Storage, receiver: mpsc::Receiver<StorageCommand>)
                     tracing::error!("Failed to record session metric: {}", e);
                 }
             }
-            StorageCommand::GetToolMetrics(tx) => {
-                let _ = tx.send(storage.get_tool_metrics());
+            StorageCommand::GetToolMetrics { since, tx } => {
+                let _ = tx.send(storage.get_tool_metrics(since));
             }
-            StorageCommand::GetTokenMetrics(tx) => {
-                let _ = tx.send(storage.get_token_metrics());
-            }
-            StorageCommand::GetSessionMetrics(tx) => {
-                let _ = tx.send(storage.get_session_metrics());
+            StorageCommand::GetTokenMetrics { since, tx } => {
+                let _ = tx.send(storage.get_token_metrics(since));
             }
             StorageCommand::Shutdown => break,
         }
@@ -347,11 +324,15 @@ impl Storage {
         Ok(())
     }
 
-    fn get_tool_metrics(&self) -> Result<Vec<ToolMetrics>> {
+    fn get_tool_metrics(&self, since: Option<DateTime<Utc>>) -> Result<Vec<ToolMetrics>> {
         // Query that combines both legacy tool_events and new log_events tables
         // The log_events query filters by event_name at query time (not ingestion)
         // This matches both "tool_result" and "claude_code.tool_result"
-        let mut stmt = self.conn.prepare(
+        let time_clause = since
+            .map(|dt| format!("AND timestamp >= '{}'", dt.to_rfc3339()))
+            .unwrap_or_default();
+
+        let query = format!(
             r#"
             WITH combined_events AS (
                 -- Legacy tool_events table
@@ -361,6 +342,7 @@ impl Storage {
                     duration_ms,
                     success
                 FROM tool_events
+                WHERE 1=1 {time_clause}
 
                 UNION ALL
 
@@ -375,7 +357,7 @@ impl Storage {
                         ELSE false
                     END as success
                 FROM log_events
-                WHERE event_name LIKE '%tool_result'
+                WHERE event_name LIKE '%tool_result' {time_clause}
             )
             SELECT
                 tool_name,
@@ -387,8 +369,10 @@ impl Storage {
             FROM combined_events
             GROUP BY tool_name
             ORDER BY call_count DESC
-            "#,
-        )?;
+            "#
+        );
+
+        let mut stmt = self.conn.prepare(&query)?;
 
         let rows = stmt.query_map([], |row| {
             let last_call_str: Option<String> = row.get(2)?;
@@ -425,16 +409,23 @@ impl Storage {
         Ok(metrics)
     }
 
-    fn get_token_metrics(&self) -> Result<TokenMetrics> {
-        let mut stmt = self.conn.prepare(
+    fn get_token_metrics(&self, since: Option<DateTime<Utc>>) -> Result<TokenMetrics> {
+        let time_clause = since
+            .map(|dt| format!("WHERE timestamp >= '{}'", dt.to_rfc3339()))
+            .unwrap_or_default();
+
+        let query = format!(
             r#"
             SELECT
                 token_type,
                 SUM(count) as total
             FROM token_usage
+            {time_clause}
             GROUP BY token_type
-            "#,
-        )?;
+            "#
+        );
+
+        let mut stmt = self.conn.prepare(&query)?;
 
         let mut metrics = TokenMetrics::default();
 
@@ -454,62 +445,14 @@ impl Storage {
         }
 
         // Get total cost
-        let cost: f64 = self.conn.query_row(
-            "SELECT COALESCE(SUM(cost_usd), 0) FROM cost_usage",
-            [],
-            |row| row.get(0),
-        )?;
+        let cost_clause = since
+            .map(|dt| format!("WHERE timestamp >= '{}'", dt.to_rfc3339()))
+            .unwrap_or_default();
+        let cost_query = format!("SELECT COALESCE(SUM(cost_usd), 0) FROM cost_usage {cost_clause}");
+        let cost: f64 = self.conn.query_row(&cost_query, [], |row| row.get(0))?;
         metrics.total_cost_usd = cost;
 
         Ok(metrics)
     }
 
-    fn get_session_metrics(&self) -> Result<SessionMetrics> {
-        let mut metrics = SessionMetrics::default();
-
-        // Get earliest timestamp as session start from both tables
-        if let Ok(Some(start_str)) = self.conn.query_row(
-            r#"
-            SELECT MIN(ts) FROM (
-                SELECT MIN(timestamp) as ts FROM tool_events
-                UNION ALL
-                SELECT MIN(timestamp) as ts FROM log_events
-            )
-            "#,
-            [],
-            |row| row.get::<_, Option<String>>(0),
-        ) && let Ok(dt) = DateTime::parse_from_rfc3339(&start_str)
-        {
-            metrics.start_time = dt.with_timezone(&Utc);
-        }
-
-        // Get latest session metrics
-        let mut stmt = self.conn.prepare(
-            r#"
-            SELECT metric_name, value
-            FROM session_metrics
-            WHERE id IN (
-                SELECT MAX(id) FROM session_metrics GROUP BY metric_name
-            )
-            "#,
-        )?;
-
-        let rows = stmt.query_map([], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
-        })?;
-
-        for row in rows {
-            let (metric_name, value) = row?;
-            match metric_name.as_str() {
-                // Support both old format (with _count suffix) and new format (without)
-                "lines_of_code" => metrics.lines_of_code = value,
-                "commit" | "commit_count" => metrics.commit_count = value as u64,
-                "pull_request" | "pr_count" => metrics.pr_count = value as u64,
-                "active_time" => metrics.active_time_seconds = value as u64,
-                _ => {}
-            }
-        }
-
-        Ok(metrics)
-    }
 }

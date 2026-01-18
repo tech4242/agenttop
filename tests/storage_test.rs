@@ -435,7 +435,7 @@ fn test_record_and_retrieve_log_events() {
     std::thread::sleep(std::time::Duration::from_millis(100));
 
     // Query tool metrics
-    let metrics = storage.get_tool_metrics().unwrap();
+    let metrics = storage.get_tool_metrics(None).unwrap();
     assert_eq!(metrics.len(), 1);
     assert_eq!(metrics[0].tool_name, "Read");
     assert_eq!(metrics[0].call_count, 1);
@@ -475,7 +475,7 @@ fn test_multiple_tool_events() {
     storage.record_log_events(events);
     std::thread::sleep(std::time::Duration::from_millis(100));
 
-    let metrics = storage.get_tool_metrics().unwrap();
+    let metrics = storage.get_tool_metrics(None).unwrap();
     assert_eq!(metrics.len(), 3); // Read, Write, Bash
 
     // Find Read metrics
@@ -503,7 +503,7 @@ fn test_token_usage_recording() {
 
     std::thread::sleep(std::time::Duration::from_millis(100));
 
-    let metrics = storage.get_token_metrics().unwrap();
+    let metrics = storage.get_token_metrics(None).unwrap();
     assert_eq!(metrics.input_tokens, 1000);
     assert_eq!(metrics.output_tokens, 500);
     assert_eq!(metrics.cache_read_tokens, 2000);
@@ -522,27 +522,8 @@ fn test_cost_recording() {
 
     std::thread::sleep(std::time::Duration::from_millis(100));
 
-    let metrics = storage.get_token_metrics().unwrap();
+    let metrics = storage.get_token_metrics(None).unwrap();
     assert!((metrics.total_cost_usd - 0.08).abs() < 0.001);
-}
-
-/// Test session metrics
-#[test]
-fn test_session_metrics_recording() {
-    use agenttop::storage::StorageHandle;
-
-    let storage = StorageHandle::new_in_memory().unwrap();
-
-    storage.record_session_metric("lines_of_code", 150);
-    storage.record_session_metric("commit", 3);
-    storage.record_session_metric("pull_request", 1);
-
-    std::thread::sleep(std::time::Duration::from_millis(100));
-
-    let metrics = storage.get_session_metrics().unwrap();
-    assert_eq!(metrics.lines_of_code, 150);
-    assert_eq!(metrics.commit_count, 3);
-    assert_eq!(metrics.pr_count, 1);
 }
 
 /// Test prefixed event names are properly aggregated
@@ -572,7 +553,7 @@ fn test_prefixed_event_names_aggregation() {
     storage.record_log_events(events);
     std::thread::sleep(std::time::Duration::from_millis(100));
 
-    let metrics = storage.get_tool_metrics().unwrap();
+    let metrics = storage.get_tool_metrics(None).unwrap();
     let read_metrics = metrics.iter().find(|m| m.tool_name == "Read").unwrap();
     // Both events should be counted for Read tool
     assert_eq!(read_metrics.call_count, 2);
@@ -604,7 +585,7 @@ fn test_non_tool_result_events_stored() {
     std::thread::sleep(std::time::Duration::from_millis(100));
 
     // Tool metrics should be empty (no tool_result events)
-    let metrics = storage.get_tool_metrics().unwrap();
+    let metrics = storage.get_tool_metrics(None).unwrap();
     assert!(metrics.is_empty());
 }
 
@@ -615,10 +596,10 @@ fn test_empty_database_metrics() {
 
     let storage = StorageHandle::new_in_memory().unwrap();
 
-    let tool_metrics = storage.get_tool_metrics().unwrap();
+    let tool_metrics = storage.get_tool_metrics(None).unwrap();
     assert!(tool_metrics.is_empty());
 
-    let token_metrics = storage.get_token_metrics().unwrap();
+    let token_metrics = storage.get_token_metrics(None).unwrap();
     assert_eq!(token_metrics.input_tokens, 0);
     assert_eq!(token_metrics.output_tokens, 0);
     assert_eq!(token_metrics.total_cost_usd, 0.0);
@@ -633,7 +614,7 @@ fn test_database_isolation_1() {
     storage.record_token_usage("input", 999);
     std::thread::sleep(std::time::Duration::from_millis(50));
 
-    let metrics = storage.get_token_metrics().unwrap();
+    let metrics = storage.get_token_metrics(None).unwrap();
     assert_eq!(metrics.input_tokens, 999);
 }
 
@@ -644,6 +625,6 @@ fn test_database_isolation_2() {
 
     let storage = StorageHandle::new_in_memory().unwrap();
     // This should NOT see data from test_database_isolation_1
-    let metrics = storage.get_token_metrics().unwrap();
+    let metrics = storage.get_token_metrics(None).unwrap();
     assert_eq!(metrics.input_tokens, 0);
 }
