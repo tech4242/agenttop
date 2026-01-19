@@ -628,3 +628,85 @@ fn test_database_isolation_2() {
     let metrics = storage.get_token_metrics(None).unwrap();
     assert_eq!(metrics.input_tokens, 0);
 }
+
+// =============================================================================
+// Tool Classification Tests
+// =============================================================================
+
+/// Test that built-in tools are correctly classified
+#[test]
+fn test_tool_metrics_is_builtin() {
+    use agenttop::storage::ToolMetrics;
+
+    let builtin_tools = vec!["Read", "Write", "Edit", "Bash", "Glob", "Grep", "Task", "TodoWrite"];
+
+    for tool_name in builtin_tools {
+        let metrics = ToolMetrics {
+            tool_name: tool_name.to_string(),
+            call_count: 1,
+            last_call: None,
+            avg_duration_ms: 0.0,
+            min_duration_ms: 0.0,
+            max_duration_ms: 0.0,
+            success_count: 1,
+            error_count: 0,
+        };
+        assert!(metrics.is_builtin(), "{} should be classified as built-in", tool_name);
+        assert!(!metrics.is_mcp(), "{} should NOT be classified as MCP", tool_name);
+    }
+}
+
+/// Test that MCP tools are correctly classified
+#[test]
+fn test_tool_metrics_is_mcp() {
+    use agenttop::storage::ToolMetrics;
+
+    let mcp_tools = vec!["context7", "playwright", "my_custom_tool", "TestRead", "sqlite_query"];
+
+    for tool_name in mcp_tools {
+        let metrics = ToolMetrics {
+            tool_name: tool_name.to_string(),
+            call_count: 1,
+            last_call: None,
+            avg_duration_ms: 0.0,
+            min_duration_ms: 0.0,
+            max_duration_ms: 0.0,
+            success_count: 1,
+            error_count: 0,
+        };
+        assert!(metrics.is_mcp(), "{} should be classified as MCP", tool_name);
+        assert!(!metrics.is_builtin(), "{} should NOT be classified as built-in", tool_name);
+    }
+}
+
+/// Test get_session_metrics from storage
+#[test]
+fn test_get_session_metrics() {
+    use agenttop::storage::StorageHandle;
+
+    let storage = StorageHandle::new_in_memory().unwrap();
+
+    // Record some session metrics
+    storage.record_session_metric("lines_of_code", 150);
+    storage.record_session_metric("lines_of_code", -30);
+    storage.record_session_metric("commits", 2);
+    storage.record_session_metric("commits", 1);
+
+    std::thread::sleep(std::time::Duration::from_millis(100));
+
+    let metrics = storage.get_session_metrics(None).unwrap();
+    assert_eq!(metrics.lines_of_code, 120); // 150 + (-30) = 120
+    assert_eq!(metrics.commit_count, 3);    // 2 + 1 = 3
+}
+
+/// Test get_session_metrics returns defaults when empty
+#[test]
+fn test_get_session_metrics_empty() {
+    use agenttop::storage::StorageHandle;
+
+    let storage = StorageHandle::new_in_memory().unwrap();
+
+    let metrics = storage.get_session_metrics(None).unwrap();
+    assert_eq!(metrics.lines_of_code, 0);
+    assert_eq!(metrics.commit_count, 0);
+}

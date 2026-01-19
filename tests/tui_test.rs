@@ -538,3 +538,119 @@ fn test_time_filter_since() {
     assert!(last_7d < now);
     assert!((now - last_7d).num_days() >= 6);
 }
+
+// =============================================================================
+// Tool Classification Filter Tests
+// =============================================================================
+
+/// Test that App correctly filters built-in tools
+#[test]
+fn test_app_builtin_tools() {
+    let storage = StorageHandle::new_in_memory().unwrap();
+
+    // Mix of built-in and MCP tools
+    storage.record_log_events(vec![
+        make_tool_event("Read", true, 50),
+        make_tool_event("Write", true, 100),
+        make_tool_event("Bash", true, 200),
+        make_tool_event("context7", true, 150),  // MCP
+        make_tool_event("playwright", true, 300), // MCP
+    ]);
+    std::thread::sleep(std::time::Duration::from_millis(100));
+
+    let mut app = App::new(storage);
+    app.refresh().unwrap();
+
+    let builtin = app.builtin_tools();
+    assert_eq!(builtin.len(), 3);
+
+    let builtin_names: Vec<&str> = builtin.iter().map(|t| t.tool_name.as_str()).collect();
+    assert!(builtin_names.contains(&"Read"));
+    assert!(builtin_names.contains(&"Write"));
+    assert!(builtin_names.contains(&"Bash"));
+    assert!(!builtin_names.contains(&"context7"));
+    assert!(!builtin_names.contains(&"playwright"));
+}
+
+/// Test that App correctly filters MCP tools
+#[test]
+fn test_app_mcp_tools() {
+    let storage = StorageHandle::new_in_memory().unwrap();
+
+    // Mix of built-in and MCP tools
+    storage.record_log_events(vec![
+        make_tool_event("Read", true, 50),
+        make_tool_event("Write", true, 100),
+        make_tool_event("context7", true, 150),  // MCP
+        make_tool_event("playwright", true, 300), // MCP
+        make_tool_event("my_custom_tool", true, 75), // MCP
+    ]);
+    std::thread::sleep(std::time::Duration::from_millis(100));
+
+    let mut app = App::new(storage);
+    app.refresh().unwrap();
+
+    let mcp = app.mcp_tools();
+    assert_eq!(mcp.len(), 3);
+
+    let mcp_names: Vec<&str> = mcp.iter().map(|t| t.tool_name.as_str()).collect();
+    assert!(mcp_names.contains(&"context7"));
+    assert!(mcp_names.contains(&"playwright"));
+    assert!(mcp_names.contains(&"my_custom_tool"));
+    assert!(!mcp_names.contains(&"Read"));
+    assert!(!mcp_names.contains(&"Write"));
+}
+
+/// Test with only built-in tools (no MCP)
+#[test]
+fn test_app_only_builtin_tools() {
+    let storage = StorageHandle::new_in_memory().unwrap();
+
+    storage.record_log_events(vec![
+        make_tool_event("Read", true, 50),
+        make_tool_event("Glob", true, 100),
+        make_tool_event("Grep", true, 150),
+    ]);
+    std::thread::sleep(std::time::Duration::from_millis(100));
+
+    let mut app = App::new(storage);
+    app.refresh().unwrap();
+
+    assert_eq!(app.builtin_tools().len(), 3);
+    assert_eq!(app.mcp_tools().len(), 0);
+}
+
+/// Test with only MCP tools (no built-in)
+#[test]
+fn test_app_only_mcp_tools() {
+    let storage = StorageHandle::new_in_memory().unwrap();
+
+    storage.record_log_events(vec![
+        make_tool_event("context7_search", true, 50),
+        make_tool_event("sqlite_query", true, 100),
+    ]);
+    std::thread::sleep(std::time::Duration::from_millis(100));
+
+    let mut app = App::new(storage);
+    app.refresh().unwrap();
+
+    assert_eq!(app.builtin_tools().len(), 0);
+    assert_eq!(app.mcp_tools().len(), 2);
+}
+
+/// Test session metrics are loaded correctly
+#[test]
+fn test_app_session_metrics() {
+    let storage = StorageHandle::new_in_memory().unwrap();
+
+    storage.record_session_metric("lines_of_code", 100);
+    storage.record_session_metric("lines_of_code", 50);
+    storage.record_session_metric("commits", 2);
+    std::thread::sleep(std::time::Duration::from_millis(100));
+
+    let mut app = App::new(storage);
+    app.refresh().unwrap();
+
+    assert_eq!(app.session_metrics.lines_of_code, 150);
+    assert_eq!(app.session_metrics.commit_count, 2);
+}
