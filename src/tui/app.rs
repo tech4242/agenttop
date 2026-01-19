@@ -185,6 +185,7 @@ impl App {
         self.tool_metrics.get(self.selected_index)
     }
 
+    #[allow(dead_code)]
     pub fn total_tokens(&self) -> u64 {
         self.token_metrics.input_tokens
             + self.token_metrics.output_tokens

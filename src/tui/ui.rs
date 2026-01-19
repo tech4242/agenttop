@@ -16,11 +16,11 @@ pub fn draw(f: &mut Frame, app: &App) {
         Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Length(3), // Header with session info
-                Constraint::Length(3), // Metrics bar (tokens + tools summary)
-                Constraint::Min(6),    // Built-in tools table
-                Constraint::Length(8), // MCP tools section
-                Constraint::Length(1), // Footer (hotkeys only)
+                Constraint::Length(3),  // Header with session info
+                Constraint::Length(3),  // Metrics bar (tokens + tools summary)
+                Constraint::Ratio(1, 2), // Built-in tools table (50%)
+                Constraint::Ratio(1, 2), // MCP tools section (50%)
+                Constraint::Length(1),  // Footer (hotkeys only)
             ])
             .split(f.area())
     } else {
@@ -212,12 +212,17 @@ fn draw_builtin_tool_table(f: &mut Frame, app: &App, area: Rect) {
             let last_str = match tool.last_call {
                 Some(last) => {
                     let diff = now - last;
-                    if diff.num_seconds() < 60 {
-                        format!("{}s", diff.num_seconds())
-                    } else if diff.num_minutes() < 60 {
-                        format!("{}m", diff.num_minutes())
+                    let secs = diff.num_seconds();
+                    if secs < 0 {
+                        "-".to_string()
+                    } else if secs < 60 {
+                        format!("{}s", secs)
+                    } else if secs < 3600 {
+                        format!("{}m", secs / 60)
+                    } else if secs < 86400 {
+                        format!("{}h", secs / 3600)
                     } else {
-                        format!("{}h", diff.num_hours())
+                        format!("{}d", secs / 86400)
                     }
                 }
                 None => "-".to_string(),
@@ -348,12 +353,17 @@ fn draw_mcp_table(f: &mut Frame, app: &App, area: Rect) {
             let last_str = match tool.last_call {
                 Some(last) => {
                     let diff = now - last;
-                    if diff.num_seconds() < 60 {
-                        format!("{}s", diff.num_seconds())
-                    } else if diff.num_minutes() < 60 {
-                        format!("{}m", diff.num_minutes())
+                    let secs = diff.num_seconds();
+                    if secs < 0 {
+                        "-".to_string()
+                    } else if secs < 60 {
+                        format!("{}s", secs)
+                    } else if secs < 3600 {
+                        format!("{}m", secs / 60)
+                    } else if secs < 86400 {
+                        format!("{}h", secs / 3600)
                     } else {
-                        format!("{}h", diff.num_hours())
+                        format!("{}d", secs / 86400)
                     }
                 }
                 None => "-".to_string(),

@@ -110,6 +110,7 @@ impl StorageHandle {
 
     /// Create an in-memory storage handle for testing.
     /// The database is isolated and won't persist or affect other tests.
+    #[allow(dead_code)]
     pub fn new_in_memory() -> Result<Self> {
         Self::spawn_actor(Storage::new_in_memory()?)
     }
