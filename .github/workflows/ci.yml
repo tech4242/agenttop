@@ -11,23 +11,19 @@ env:
   RUST_BACKTRACE: 1
 
 jobs:
-  lint:
-    name: Lint
+  fmt:
+    name: Format
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
-          components: rustfmt, clippy
-      - uses: Swatinem/rust-cache@v2
-      - name: Format
-        run: cargo fmt --all -- --check
-      - name: Clippy
-        run: cargo clippy --lib --bins -- -D warnings
+          components: rustfmt
+      - run: cargo fmt --all -- --check
 
   test:
     name: Test
-    needs: lint
+    needs: fmt
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
@@ -55,21 +51,35 @@ jobs:
 
   build-linux:
     name: Build (Linux)
-    needs: lint
+    needs: fmt
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ubuntu-release
       - run: cargo build --release
       - uses: actions/upload-artifact@v4
         with:
           name: agenttop-x86_64-unknown-linux-gnu
           path: target/release/agenttop
 
+  clippy:
+    name: Clippy
+    needs: fmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy --all-targets -- -D warnings
+
   build-macos:
     name: Build (macOS)
-    needs: lint
+    needs: fmt
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
