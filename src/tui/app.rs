@@ -1,7 +1,7 @@
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 
-use crate::storage::{StorageHandle, TokenMetrics, ToolMetrics};
+use crate::storage::{SessionMetrics, StorageHandle, TokenMetrics, ToolMetrics};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum TimeFilter {
@@ -44,6 +44,7 @@ pub struct App {
     storage: StorageHandle,
     pub tool_metrics: Vec<ToolMetrics>,
     pub token_metrics: TokenMetrics,
+    pub session_metrics: SessionMetrics,
     pub selected_index: usize,
     pub sort_by: SortColumn,
     pub sort_ascending: bool,
@@ -59,6 +60,7 @@ impl App {
             storage,
             tool_metrics: Vec::new(),
             token_metrics: TokenMetrics::default(),
+            session_metrics: SessionMetrics::default(),
             selected_index: 0,
             sort_by: SortColumn::Calls,
             sort_ascending: false,
@@ -76,6 +78,7 @@ impl App {
 
         self.tool_metrics = self.storage.get_tool_metrics(self.time_filter.since())?;
         self.token_metrics = self.storage.get_token_metrics(self.time_filter.since())?;
+        self.session_metrics = self.storage.get_session_metrics(self.time_filter.since())?;
         self.last_refresh = Utc::now();
 
         // Sort the tools
@@ -198,12 +201,20 @@ impl App {
         };
     }
 
-    pub fn cache_hit_rate(&self) -> f64 {
+    pub fn cache_reuse_rate(&self) -> f64 {
         let total_input = self.token_metrics.input_tokens + self.token_metrics.cache_read_tokens;
         if total_input == 0 {
             return 0.0;
         }
         (self.token_metrics.cache_read_tokens as f64 / total_input as f64) * 100.0
+    }
+
+    pub fn builtin_tools(&self) -> Vec<&ToolMetrics> {
+        self.tool_metrics.iter().filter(|t| t.is_builtin()).collect()
+    }
+
+    pub fn mcp_tools(&self) -> Vec<&ToolMetrics> {
+        self.tool_metrics.iter().filter(|t| t.is_mcp()).collect()
     }
 
     pub fn total_tool_calls(&self) -> u64 {
@@ -232,5 +243,17 @@ impl App {
             .map(|t| t.avg_duration_ms * t.call_count as f64)
             .sum();
         weighted_sum / total_calls as f64
+    }
+
+    /// Get the last error message for the selected tool (if any)
+    pub fn get_selected_tool_last_error(&self) -> Option<String> {
+        let tool = self.selected_tool()?;
+        if tool.error_count == 0 {
+            return None;
+        }
+        self.storage
+            .get_last_tool_error(&tool.tool_name)
+            .ok()
+            .flatten()
     }
 }

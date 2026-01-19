@@ -83,9 +83,9 @@ fn test_app_total_tokens() {
     assert_eq!(app.total_tokens(), 3600);
 }
 
-/// Test that App correctly computes cache hit rate
+/// Test that App correctly computes cache reuse rate
 #[test]
-fn test_app_cache_hit_rate() {
+fn test_app_cache_reuse_rate() {
     let storage = StorageHandle::new_in_memory().unwrap();
 
     storage.record_token_usage("input", 1000);
@@ -97,7 +97,7 @@ fn test_app_cache_hit_rate() {
     app.refresh().unwrap();
 
     // 4000 / (1000 + 4000) = 80%
-    assert!((app.cache_hit_rate() - 80.0).abs() < 0.1);
+    assert!((app.cache_reuse_rate() - 80.0).abs() < 0.1);
 }
 
 /// Test that App sorting works correctly

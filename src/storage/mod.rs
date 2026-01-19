@@ -7,14 +7,34 @@ use std::path::PathBuf;
 use std::sync::mpsc;
 use std::thread;
 
+/// Known built-in Claude Code tools. Tools not in this list are classified as MCP tools.
+const BUILTIN_TOOLS: &[&str] = &[
+    "Read", "Write", "Edit", "Bash", "Glob", "Grep", "Task",
+    "TodoRead", "TodoWrite", "WebFetch", "WebSearch", "Agent",
+    "Skill", "AskUser", "AskUserQuestion", "MultiEdit", "NotebookEdit",
+    "KillShell", "EnterPlanMode", "ExitPlanMode", "TaskOutput",
+];
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolMetrics {
     pub tool_name: String,
     pub call_count: u64,
     pub last_call: Option<DateTime<Utc>>,
     pub avg_duration_ms: f64,
+    pub min_duration_ms: f64,
+    pub max_duration_ms: f64,
     pub success_count: u64,
     pub error_count: u64,
+}
+
+impl ToolMetrics {
+    pub fn is_builtin(&self) -> bool {
+        BUILTIN_TOOLS.contains(&self.tool_name.as_str())
+    }
+
+    pub fn is_mcp(&self) -> bool {
+        !self.is_builtin()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -24,6 +44,12 @@ pub struct TokenMetrics {
     pub cache_read_tokens: u64,
     pub cache_creation_tokens: u64,
     pub total_cost_usd: f64,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct SessionMetrics {
+    pub lines_of_code: i64,
+    pub commit_count: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -59,6 +85,14 @@ enum StorageCommand {
     GetTokenMetrics {
         since: Option<DateTime<Utc>>,
         tx: mpsc::Sender<Result<TokenMetrics>>,
+    },
+    GetLastToolError {
+        tool_name: String,
+        tx: mpsc::Sender<Result<Option<String>>>,
+    },
+    GetSessionMetrics {
+        since: Option<DateTime<Utc>>,
+        tx: mpsc::Sender<Result<SessionMetrics>>,
     },
     Shutdown,
 }
@@ -136,6 +170,21 @@ impl StorageHandle {
             .send(StorageCommand::GetTokenMetrics { since, tx })?;
         rx.recv()?
     }
+
+    pub fn get_last_tool_error(&self, tool_name: &str) -> Result<Option<String>> {
+        let (tx, rx) = mpsc::channel();
+        self.sender.send(StorageCommand::GetLastToolError {
+            tool_name: tool_name.to_string(),
+            tx,
+        })?;
+        rx.recv()?
+    }
+
+    pub fn get_session_metrics(&self, since: Option<DateTime<Utc>>) -> Result<SessionMetrics> {
+        let (tx, rx) = mpsc::channel();
+        self.sender.send(StorageCommand::GetSessionMetrics { since, tx })?;
+        rx.recv()?
+    }
 }
 
 fn run_storage_actor(storage: Storage, receiver: mpsc::Receiver<StorageCommand>) -> Result<()> {
@@ -171,6 +220,12 @@ fn run_storage_actor(storage: Storage, receiver: mpsc::Receiver<StorageCommand>)
             }
             StorageCommand::GetTokenMetrics { since, tx } => {
                 let _ = tx.send(storage.get_token_metrics(since));
+            }
+            StorageCommand::GetLastToolError { tool_name, tx } => {
+                let _ = tx.send(storage.get_last_tool_error(&tool_name));
+            }
+            StorageCommand::GetSessionMetrics { since, tx } => {
+                let _ = tx.send(storage.get_session_metrics(since));
             }
             StorageCommand::Shutdown => break,
         }
@@ -301,6 +356,7 @@ impl Storage {
     }
 
     fn record_token_usage(&self, token_type: &str, count: u64) -> Result<()> {
+        tracing::debug!("Token received: type={}, count={}", token_type, count);
         self.conn.execute(
             "INSERT INTO token_usage (timestamp, token_type, count) VALUES (?, ?, ?)",
             params![Utc::now().to_rfc3339(), token_type, count as i64],
@@ -364,6 +420,8 @@ impl Storage {
                 COUNT(*) as call_count,
                 CAST(MAX(timestamp) AS VARCHAR) as last_call,
                 AVG(duration_ms) as avg_duration_ms,
+                MIN(duration_ms) as min_duration_ms,
+                MAX(duration_ms) as max_duration_ms,
                 SUM(CASE WHEN success THEN 1 ELSE 0 END) as success_count,
                 SUM(CASE WHEN NOT success THEN 1 ELSE 0 END) as error_count
             FROM combined_events
@@ -397,8 +455,10 @@ impl Storage {
                 call_count: row.get::<_, i64>(1)? as u64,
                 last_call,
                 avg_duration_ms: row.get(3)?,
-                success_count: row.get::<_, i64>(4)? as u64,
-                error_count: row.get::<_, i64>(5)? as u64,
+                min_duration_ms: row.get(4)?,
+                max_duration_ms: row.get(5)?,
+                success_count: row.get::<_, i64>(6)? as u64,
+                error_count: row.get::<_, i64>(7)? as u64,
             })
         })?;
 
@@ -436,11 +496,13 @@ impl Storage {
         for row in rows {
             let (token_type, count) = row?;
             match token_type.as_str() {
-                "input" => metrics.input_tokens = count,
-                "output" => metrics.output_tokens = count,
-                "cacheRead" => metrics.cache_read_tokens = count,
-                "cacheCreation" => metrics.cache_creation_tokens = count,
-                _ => {}
+                "input" | "prompt_tokens" | "input_tokens" => metrics.input_tokens += count,
+                "output" | "completion_tokens" | "output_tokens" => metrics.output_tokens += count,
+                "cacheRead" | "cache_read" | "cache_hit" => metrics.cache_read_tokens += count,
+                "cacheCreation" | "cache_creation" | "cache_write" => metrics.cache_creation_tokens += count,
+                other => {
+                    tracing::warn!("Unknown token type: {}", other);
+                }
             }
         }
 
@@ -455,4 +517,74 @@ impl Storage {
         Ok(metrics)
     }
 
+    fn get_last_tool_error(&self, tool_name: &str) -> Result<Option<String>> {
+        // Query for the last error from both legacy tool_events and log_events tables
+        let query = r#"
+            WITH errors AS (
+                -- Legacy tool_events table
+                SELECT timestamp, error as error_msg
+                FROM tool_events
+                WHERE tool_name = ? AND success = false AND error IS NOT NULL
+
+                UNION ALL
+
+                -- New log_events table
+                SELECT timestamp, json_extract_string(attributes, '$.error') as error_msg
+                FROM log_events
+                WHERE event_name LIKE '%tool_result'
+                  AND json_extract_string(attributes, '$.tool_name') = ?
+                  AND json_extract_string(attributes, '$.success') NOT IN ('true', '1')
+                  AND json_extract_string(attributes, '$.error') IS NOT NULL
+            )
+            SELECT error_msg
+            FROM errors
+            ORDER BY timestamp DESC
+            LIMIT 1
+        "#;
+
+        let result: Result<String, _> = self.conn.query_row(query, params![tool_name, tool_name], |row| {
+            row.get(0)
+        });
+
+        match result {
+            Ok(msg) => Ok(Some(msg)),
+            Err(duckdb::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    fn get_session_metrics(&self, since: Option<DateTime<Utc>>) -> Result<SessionMetrics> {
+        let time_clause = since
+            .map(|dt| format!("WHERE timestamp >= '{}'", dt.to_rfc3339()))
+            .unwrap_or_default();
+
+        let query = format!(
+            r#"
+            SELECT
+                metric_name,
+                SUM(value) as total
+            FROM session_metrics
+            {time_clause}
+            GROUP BY metric_name
+            "#
+        );
+
+        let mut stmt = self.conn.prepare(&query)?;
+        let mut metrics = SessionMetrics::default();
+
+        let rows = stmt.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+        })?;
+
+        for row in rows {
+            let (metric_name, value) = row?;
+            match metric_name.as_str() {
+                "lines_of_code" | "loc" => metrics.lines_of_code = value,
+                "commits" | "commit_count" => metrics.commit_count = value as u64,
+                _ => {}
+            }
+        }
+
+        Ok(metrics)
+    }
 }
