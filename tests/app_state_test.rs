@@ -1,4 +1,5 @@
 //! App state tests
+#![allow(dead_code, clippy::useless_vec)]
 
 use chrono::{DateTime, Utc};
 

@@ -125,7 +125,11 @@ impl App {
                         .avg_duration_ms
                         .partial_cmp(&b.avg_duration_ms)
                         .unwrap_or(std::cmp::Ordering::Equal);
-                    let primary = if ascending { primary } else { primary.reverse() };
+                    let primary = if ascending {
+                        primary
+                    } else {
+                        primary.reverse()
+                    };
                     primary.then_with(|| a.tool_name.cmp(&b.tool_name))
                 });
             }
@@ -214,7 +218,10 @@ impl App {
     }
 
     pub fn builtin_tools(&self) -> Vec<&ToolMetrics> {
-        self.tool_metrics.iter().filter(|t| t.is_builtin()).collect()
+        self.tool_metrics
+            .iter()
+            .filter(|t| t.is_builtin())
+            .collect()
     }
 
     pub fn mcp_tools(&self) -> Vec<&ToolMetrics> {

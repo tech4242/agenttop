@@ -11,10 +11,27 @@ use std::thread;
 
 /// Known built-in Claude Code tools. Tools not in this list are classified as MCP tools.
 const BUILTIN_TOOLS: &[&str] = &[
-    "Read", "Write", "Edit", "Bash", "Glob", "Grep", "Task",
-    "TodoRead", "TodoWrite", "WebFetch", "WebSearch", "Agent",
-    "Skill", "AskUser", "AskUserQuestion", "MultiEdit", "NotebookEdit",
-    "KillShell", "EnterPlanMode", "ExitPlanMode", "TaskOutput",
+    "Read",
+    "Write",
+    "Edit",
+    "Bash",
+    "Glob",
+    "Grep",
+    "Task",
+    "TodoRead",
+    "TodoWrite",
+    "WebFetch",
+    "WebSearch",
+    "Agent",
+    "Skill",
+    "AskUser",
+    "AskUserQuestion",
+    "MultiEdit",
+    "NotebookEdit",
+    "KillShell",
+    "EnterPlanMode",
+    "ExitPlanMode",
+    "TaskOutput",
 ];
 
 /// Regex to parse MCP tool names in format: mcp__<server>__<tool> or mcp__plugin_<plugin>_<server>__<tool>
@@ -152,9 +169,15 @@ pub struct LogEvent {
 enum StorageCommand {
     RecordToolEvent(ToolEvent),
     RecordLogEvents(Vec<LogEvent>),
-    RecordTokenUsage { token_type: String, count: u64 },
+    RecordTokenUsage {
+        token_type: String,
+        count: u64,
+    },
     RecordCost(f64),
-    RecordSessionMetric { name: String, value: i64 },
+    RecordSessionMetric {
+        name: String,
+        value: i64,
+    },
     GetToolMetrics {
         since: Option<DateTime<Utc>>,
         tx: mpsc::Sender<Result<Vec<ToolMetrics>>>,
@@ -264,13 +287,15 @@ impl StorageHandle {
 
     pub fn get_session_metrics(&self, since: Option<DateTime<Utc>>) -> Result<SessionMetrics> {
         let (tx, rx) = mpsc::channel();
-        self.sender.send(StorageCommand::GetSessionMetrics { since, tx })?;
+        self.sender
+            .send(StorageCommand::GetSessionMetrics { since, tx })?;
         rx.recv()?
     }
 
     pub fn get_api_metrics(&self, since: Option<DateTime<Utc>>) -> Result<ApiMetrics> {
         let (tx, rx) = mpsc::channel();
-        self.sender.send(StorageCommand::GetApiMetrics { since, tx })?;
+        self.sender
+            .send(StorageCommand::GetApiMetrics { since, tx })?;
         rx.recv()?
     }
 }
@@ -539,7 +564,9 @@ impl Storage {
                     .or_else(|| {
                         // Try DuckDB's format: "2026-01-18 21:03:57.123456" or "2026-01-18 21:03:57"
                         chrono::NaiveDateTime::parse_from_str(&s, "%Y-%m-%d %H:%M:%S%.f")
-                            .or_else(|_| chrono::NaiveDateTime::parse_from_str(&s, "%Y-%m-%d %H:%M:%S"))
+                            .or_else(|_| {
+                                chrono::NaiveDateTime::parse_from_str(&s, "%Y-%m-%d %H:%M:%S")
+                            })
                             .ok()
                             .map(|naive| naive.and_utc())
                     })
@@ -596,7 +623,9 @@ impl Storage {
                 "input" | "prompt_tokens" | "input_tokens" => metrics.input_tokens += count,
                 "output" | "completion_tokens" | "output_tokens" => metrics.output_tokens += count,
                 "cacheRead" | "cache_read" | "cache_hit" => metrics.cache_read_tokens += count,
-                "cacheCreation" | "cache_creation" | "cache_write" => metrics.cache_creation_tokens += count,
+                "cacheCreation" | "cache_creation" | "cache_write" => {
+                    metrics.cache_creation_tokens += count
+                }
                 other => {
                     tracing::warn!("Unknown token type: {}", other);
                 }
@@ -639,9 +668,9 @@ impl Storage {
             LIMIT 1
         "#;
 
-        let result: Result<String, _> = self.conn.query_row(query, params![tool_name, tool_name], |row| {
-            row.get(0)
-        });
+        let result: Result<String, _> =
+            self.conn
+                .query_row(query, params![tool_name, tool_name], |row| row.get(0));
 
         match result {
             Ok(msg) => Ok(Some(msg)),

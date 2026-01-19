@@ -490,7 +490,7 @@ fn test_app_builtin_tools() {
         make_tool_event("Read", true, 50),
         make_tool_event("Write", true, 100),
         make_tool_event("Bash", true, 200),
-        make_tool_event("context7", true, 150),  // MCP (old style)
+        make_tool_event("context7", true, 150), // MCP (old style)
         make_tool_event("playwright", true, 300), // MCP (old style)
     ]);
     std::thread::sleep(std::time::Duration::from_millis(100));
@@ -519,8 +519,8 @@ fn test_app_mcp_tools() {
     storage.record_log_events(vec![
         make_tool_event("Read", true, 50),
         make_tool_event("Write", true, 100),
-        make_tool_event("context7", true, 150),  // MCP
-        make_tool_event("playwright", true, 300), // MCP
+        make_tool_event("context7", true, 150),      // MCP
+        make_tool_event("playwright", true, 300),    // MCP
         make_tool_event("my_custom_tool", true, 75), // MCP
     ]);
     std::thread::sleep(std::time::Duration::from_millis(100));

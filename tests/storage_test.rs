@@ -2,6 +2,7 @@
 //!
 //! These tests verify storage structures and calculations, as well as
 //! query-time filtering behavior for tool_result events.
+#![allow(dead_code)]
 
 use chrono::{DateTime, Timelike, Utc};
 use std::collections::HashMap;
@@ -638,7 +639,16 @@ fn test_database_isolation_2() {
 fn test_tool_metrics_is_builtin() {
     use agenttop::storage::ToolMetrics;
 
-    let builtin_tools = vec!["Read", "Write", "Edit", "Bash", "Glob", "Grep", "Task", "TodoWrite"];
+    let builtin_tools = vec![
+        "Read",
+        "Write",
+        "Edit",
+        "Bash",
+        "Glob",
+        "Grep",
+        "Task",
+        "TodoWrite",
+    ];
 
     for tool_name in builtin_tools {
         let metrics = ToolMetrics {
@@ -653,8 +663,16 @@ fn test_tool_metrics_is_builtin() {
             approved_count: 0,
             rejected_count: 0,
         };
-        assert!(metrics.is_builtin(), "{} should be classified as built-in", tool_name);
-        assert!(!metrics.is_mcp(), "{} should NOT be classified as MCP", tool_name);
+        assert!(
+            metrics.is_builtin(),
+            "{} should be classified as built-in",
+            tool_name
+        );
+        assert!(
+            !metrics.is_mcp(),
+            "{} should NOT be classified as MCP",
+            tool_name
+        );
     }
 }
 
@@ -686,8 +704,16 @@ fn test_tool_metrics_is_mcp() {
             approved_count: 0,
             rejected_count: 0,
         };
-        assert!(metrics.is_mcp(), "{} should be classified as MCP", tool_name);
-        assert!(!metrics.is_builtin(), "{} should NOT be classified as built-in", tool_name);
+        assert!(
+            metrics.is_mcp(),
+            "{} should be classified as MCP",
+            tool_name
+        );
+        assert!(
+            !metrics.is_builtin(),
+            "{} should NOT be classified as built-in",
+            tool_name
+        );
     }
 }
 
@@ -708,7 +734,7 @@ fn test_get_session_metrics() {
 
     let metrics = storage.get_session_metrics(None).unwrap();
     assert_eq!(metrics.lines_of_code, 120); // 150 + (-30) = 120
-    assert_eq!(metrics.commit_count, 3);    // 2 + 1 = 3
+    assert_eq!(metrics.commit_count, 3); // 2 + 1 = 3
 }
 
 /// Test get_session_metrics returns defaults when empty

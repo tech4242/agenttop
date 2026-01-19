@@ -73,11 +73,11 @@ pub fn draw(f: &mut Frame, app: &App) {
         Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Length(3),  // Header with session info
-                Constraint::Length(3),  // Metrics bar (tokens + tools summary)
+                Constraint::Length(3),   // Header with session info
+                Constraint::Length(3),   // Metrics bar (tokens + tools summary)
                 Constraint::Ratio(1, 2), // Built-in tools table (50%)
                 Constraint::Ratio(1, 2), // MCP tools section (50%)
-                Constraint::Length(1),  // Footer (hotkeys only)
+                Constraint::Length(1),   // Footer (hotkeys only)
             ])
             .split(f.area())
     } else {
@@ -122,7 +122,10 @@ fn draw_header(f: &mut Frame, app: &App, area: Rect) {
 
     // Add active time if available
     if active_time != "-" {
-        header_spans.push(Span::styled("Active: ", Style::default().fg(Color::DarkGray)));
+        header_spans.push(Span::styled(
+            "Active: ",
+            Style::default().fg(Color::DarkGray),
+        ));
         header_spans.push(Span::styled(active_time, Style::default().fg(Color::Cyan)));
         header_spans.push(Span::raw("  "));
     }
@@ -173,7 +176,10 @@ fn draw_metrics_bar(f: &mut Frame, app: &App, area: Rect) {
         Span::raw("  "),
         Span::styled("Cache: ", Style::default().fg(Color::DarkGray)),
         Span::styled(
-            format!("{:.1}K", app.token_metrics.cache_read_tokens as f64 / 1000.0),
+            format!(
+                "{:.1}K",
+                app.token_metrics.cache_read_tokens as f64 / 1000.0
+            ),
             Style::default().fg(Color::Magenta),
         ),
         Span::raw(" ("),
@@ -211,7 +217,10 @@ fn draw_metrics_bar(f: &mut Frame, app: &App, area: Rect) {
             if loc != 0 {
                 metrics_spans.push(Span::raw("  "));
             }
-            metrics_spans.push(Span::styled("Commits: ", Style::default().fg(Color::DarkGray)));
+            metrics_spans.push(Span::styled(
+                "Commits: ",
+                Style::default().fg(Color::DarkGray),
+            ));
             metrics_spans.push(Span::styled(
                 commits.to_string(),
                 Style::default().fg(Color::Yellow),
@@ -229,21 +238,18 @@ fn draw_metrics_bar(f: &mut Frame, app: &App, area: Rect) {
     let mut api_spans = vec![
         Span::raw(" API     "),
         Span::styled("Calls: ", Style::default().fg(Color::DarkGray)),
-        Span::styled(
-            api_calls.to_string(),
-            Style::default().fg(Color::Cyan),
-        ),
+        Span::styled(api_calls.to_string(), Style::default().fg(Color::Cyan)),
         Span::raw("  "),
         Span::styled("Avg: ", Style::default().fg(Color::DarkGray)),
-        Span::styled(
-            api_latency,
-            Style::default().fg(Color::LightBlue),
-        ),
+        Span::styled(api_latency, Style::default().fg(Color::LightBlue)),
     ];
 
     if api_errors > 0 {
         api_spans.push(Span::raw("  "));
-        api_spans.push(Span::styled("Errors: ", Style::default().fg(Color::DarkGray)));
+        api_spans.push(Span::styled(
+            "Errors: ",
+            Style::default().fg(Color::DarkGray),
+        ));
         api_spans.push(Span::styled(
             api_errors.to_string(),
             Style::default().fg(Color::Red),
@@ -253,7 +259,10 @@ fn draw_metrics_bar(f: &mut Frame, app: &App, area: Rect) {
     // Add model breakdown if available
     if !app.api_metrics.models.is_empty() {
         api_spans.push(Span::raw("  "));
-        api_spans.push(Span::styled("Models: ", Style::default().fg(Color::DarkGray)));
+        api_spans.push(Span::styled(
+            "Models: ",
+            Style::default().fg(Color::DarkGray),
+        ));
 
         // Sort models by count descending and format as "model (count)"
         let mut models: Vec<_> = app.api_metrics.models.iter().collect();
@@ -276,7 +285,10 @@ fn draw_metrics_bar(f: &mut Frame, app: &App, area: Rect) {
     }
 
     api_spans.push(Span::raw("  │  "));
-    api_spans.push(Span::styled("Tools: ", Style::default().fg(Color::DarkGray)));
+    api_spans.push(Span::styled(
+        "Tools: ",
+        Style::default().fg(Color::DarkGray),
+    ));
     api_spans.push(Span::styled(
         total_calls.to_string(),
         Style::default().fg(Color::Cyan),
@@ -284,15 +296,18 @@ fn draw_metrics_bar(f: &mut Frame, app: &App, area: Rect) {
 
     let api_line = Line::from(api_spans);
 
-    let block = Block::default()
-        .borders(Borders::LEFT | Borders::RIGHT);
+    let block = Block::default().borders(Borders::LEFT | Borders::RIGHT);
 
     let paragraph = Paragraph::new(vec![metrics_line, api_line]).block(block);
     f.render_widget(paragraph, area);
 }
 
 fn draw_builtin_tool_table(f: &mut Frame, app: &App, area: Rect) {
-    let header_cells = ["TOOL", "CALLS", "ERR", "APR%", "AVG", "RANGE", "LAST", "FREQ"].iter().map(|h| {
+    let header_cells = [
+        "TOOL", "CALLS", "ERR", "APR%", "AVG", "RANGE", "LAST", "FREQ",
+    ]
+    .iter()
+    .map(|h| {
         Cell::from(*h).style(
             Style::default()
                 .fg(Color::Yellow)
@@ -448,7 +463,11 @@ fn draw_mcp_table(f: &mut Frame, app: &App, area: Rect) {
         return;
     }
 
-    let header_cells = ["TOOL", "CALLS", "ERR", "APR%", "AVG", "RANGE", "LAST", "FREQ"].iter().map(|h| {
+    let header_cells = [
+        "TOOL", "CALLS", "ERR", "APR%", "AVG", "RANGE", "LAST", "FREQ",
+    ]
+    .iter()
+    .map(|h| {
         Cell::from(*h).style(
             Style::default()
                 .fg(Color::Yellow)
@@ -460,11 +479,7 @@ fn draw_mcp_table(f: &mut Frame, app: &App, area: Rect) {
     let now = Utc::now();
 
     // Calculate max calls from MCP tools only for the frequency bar
-    let max_calls = mcp_tools
-        .iter()
-        .map(|t| t.call_count)
-        .max()
-        .unwrap_or(1);
+    let max_calls = mcp_tools.iter().map(|t| t.call_count).max().unwrap_or(1);
 
     let rows: Vec<Row> = mcp_tools
         .iter()
@@ -584,12 +599,10 @@ fn draw_mcp_table(f: &mut Frame, app: &App, area: Rect) {
 }
 
 fn draw_footer(f: &mut Frame, area: Rect) {
-    let footer = Line::from(vec![
-        Span::styled(
-            " [q]uit [s]ort [p]ause [d]etail [t]ime [r]eset",
-            Style::default().fg(Color::DarkGray),
-        ),
-    ]);
+    let footer = Line::from(vec![Span::styled(
+        " [q]uit [s]ort [p]ause [d]etail [t]ime [r]eset",
+        Style::default().fg(Color::DarkGray),
+    )]);
 
     let paragraph = Paragraph::new(footer);
     f.render_widget(paragraph, area);
@@ -693,18 +706,20 @@ fn draw_detail_popup(f: &mut Frame, app: &App) {
     // Add last error if present
     if let Some(last_error) = app.get_selected_tool_last_error() {
         content.push(Line::from(""));
-        content.push(Line::from(vec![
-            Span::styled("Last Error: ", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),
-        ]));
+        content.push(Line::from(vec![Span::styled(
+            "Last Error: ",
+            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+        )]));
         // Truncate error message if too long (max ~60 chars per line, 2 lines)
         let error_display = if last_error.len() > 120 {
             format!("{}...", &last_error[..117])
         } else {
             last_error
         };
-        content.push(Line::from(vec![
-            Span::styled(error_display, Style::default().fg(Color::Red)),
-        ]));
+        content.push(Line::from(vec![Span::styled(
+            error_display,
+            Style::default().fg(Color::Red),
+        )]));
     }
 
     content.push(Line::from(""));
