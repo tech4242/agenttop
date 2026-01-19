@@ -42,6 +42,44 @@ A terminal-native observability dashboard for AI coding agents. Real-time visibi
 └───── [q]uit [s]ort [p]ause [d]etail [t]ime [r]eset ──────────────────────┘
 ```
 
+## Origin Story
+
+This is the spiritual successor of an MCP logging and monitoring tool that I was building over at https://github.com/tech4242/mcphawk. After realising that the tool needs to wrap every MCP server call in e.g. Claude configs and the fact that we can only log useful information for local calls due to various OS limitations (esp. on macOS), I gate it a rest. 
+
+Then recently I realised that we have OTLP support in some these tools, so I wanted to build something simpler (like htop) that just focuses on tool and token usage. YMMV by tool and I am hoping to push these providers to squeeze out a little more of OTLP by exposing more metrics.
+
+Having said that, see the Limitations and Supported Agents chapter below - long way to go but let's get started!
+
+The goal: increase transparency in development without leaving your Terminal.
+
+If you want to contribute, please let me know! 
+
+## Supported Agents
+
+| Agent | OTLP Support | Signals | MCP Tools | Key Metrics |
+|-------|--------------|---------|-----------|-------------|
+| **Claude Code** | ✅ Full | Metrics, Logs | Anonymized (`mcp_tool`) | tokens, cost, tools, LOC |
+| **OpenAI Codex CLI** | ✅ Partial | Logs, Traces | Full names | tokens, tools, prompts |
+| **Gemini CLI** | ✅ Full | Metrics, Logs | Full names + `tool_type` | 40+ metrics |
+| **Qwen Code** | ✅ Full | Metrics, Logs | Unknown | tokens, diff stats |
+| **Cline** | ⚠️ Via provider | Logs, Metrics | N/A | events, errors |
+| **Cursor** | ❌ Proprietary | Admin API only | N/A | aggregate stats |
+| **GitHub Copilot** | ❌ Proprietary | REST API only | N/A | usage rates |
+| **Aider** | ❌ None | - | - | - |
+
+## Features
+
+- **Token Tracking** - Input, output, and cache token metrics
+- **Tool Table** - Real-time tool call metrics with:
+  - Call count and error count
+  - Time since last call
+  - Average duration and duration range
+  - Relative frequency bar
+- **API Metrics** - API calls, latency, active time
+- **Productivity Metrics** - Lines of code, commits
+- **Cache Reuse Rate** - Prompt caching efficiency
+- **Session Cost** - Running cost estimate
+
 ## Installation
 
 ### Homebrew (macOS)
@@ -71,47 +109,6 @@ That's it! agenttop automatically:
 1. Enables Claude Code's OpenTelemetry export (if not already enabled)
 2. Starts an OTLP receiver on port 4318
 3. Shows real-time metrics in a terminal dashboard
-
-## Supported Agents
-
-| Agent | OTLP Support | Signals | MCP Tools | Key Metrics |
-|-------|--------------|---------|-----------|-------------|
-| **Claude Code** | ✅ Full | Metrics, Logs | Anonymized (`mcp_tool`) | tokens, cost, tools, LOC |
-| **OpenAI Codex CLI** | ✅ Partial | Logs, Traces | Full names | tokens, tools, prompts |
-| **Gemini CLI** | ✅ Full | Metrics, Logs | Full names + `tool_type` | 40+ metrics |
-| **Qwen Code** | ✅ Full | Metrics, Logs | Unknown | tokens, diff stats |
-| **Cline** | ⚠️ Via provider | Logs, Metrics | N/A | events, errors |
-| **Cursor** | ❌ Proprietary | Admin API only | N/A | aggregate stats |
-| **GitHub Copilot** | ❌ Proprietary | REST API only | N/A | usage rates |
-| **Aider** | ❌ None | - | - | - |
-
-## Features
-
-- **Token Tracking** - Input, output, and cache token metrics
-- **Tool Table** - Real-time tool call metrics with:
-  - Call count and error count
-  - Time since last call
-  - Average duration and duration range
-  - Relative frequency bar
-- **API Metrics** - API calls, latency, active time
-- **Productivity Metrics** - Lines of code, commits
-- **Cache Reuse Rate** - Prompt caching efficiency
-- **Session Cost** - Running cost estimate
-
-## Limitations
-
-### MCP Tool Names (Claude Code)
-Claude Code anonymizes MCP tool names in telemetry for privacy (v2.1.2+).
-All MCP tools appear as `mcp_tool`. Other agents (Codex, Gemini) expose full names.
-
-### Context Window Usage
-Claude Code does NOT expose context window usage or compaction status in telemetry.
-The ~200K context window and ~75% compaction threshold are internal only.
-agenttop shows cumulative session tokens, not context window remaining.
-
-### Approval Rate
-The `decision` attribute for tool approval tracking is not consistently present
-in all Claude Code versions. APR% may show as 100% when data is unavailable.
 
 ## Keyboard Shortcuts
 
@@ -159,6 +156,21 @@ Claude Code                        agenttop
 | `tool_result` / `claude_code.tool_result` | Tool invocations with success/duration |
 | `api_request` | API calls with model, latency, token counts |
 | `api_error` | API errors with error type and message |
+
+## Limitations
+
+### MCP Tool Names (Claude Code)
+Claude Code anonymizes MCP tool names in telemetry for privacy (v2.1.2+).
+All MCP tools appear as `mcp_tool`. Other agents (Codex, Gemini) expose full names.
+
+### Context Window Usage
+Claude Code does NOT expose context window usage or compaction status in telemetry.
+The ~200K context window and ~75% compaction threshold are internal only.
+agenttop shows cumulative session tokens, not context window remaining.
+
+### Approval Rate
+The `decision` attribute for tool approval tracking is not consistently present
+in all Claude Code versions. APR% may show as 100% when data is unavailable.
 
 ## Configuration
 
