@@ -49,22 +49,6 @@ jobs:
           fi
           echo "OK: No test artifacts created"
 
-  build-linux:
-    name: Build (Linux)
-    needs: fmt
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: ubuntu-release
-      - run: cargo build --release
-      - uses: actions/upload-artifact@v4
-        with:
-          name: agenttop-x86_64-unknown-linux-gnu
-          path: target/release/agenttop
-
   clippy:
     name: Clippy
     needs: fmt
@@ -76,28 +60,3 @@ jobs:
           components: clippy
       - uses: Swatinem/rust-cache@v2
       - run: cargo clippy --all-targets -- -D warnings
-
-  build-macos:
-    name: Build (macOS)
-    needs: fmt
-    runs-on: macos-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: aarch64-apple-darwin,x86_64-apple-darwin
-      - uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: macos-universal
-      - name: Build ARM64
-        run: cargo build --release --target aarch64-apple-darwin
-      - name: Build x86_64
-        run: cargo build --release --target x86_64-apple-darwin
-      - uses: actions/upload-artifact@v4
-        with:
-          name: agenttop-aarch64-apple-darwin
-          path: target/aarch64-apple-darwin/release/agenttop
-      - uses: actions/upload-artifact@v4
-        with:
-          name: agenttop-x86_64-apple-darwin
-          path: target/x86_64-apple-darwin/release/agenttop
