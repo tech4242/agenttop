@@ -82,21 +82,39 @@ If you want to contribute, please let me know!
 
 ## Installation
 
-### Homebrew (macOS)
-
-```bash
-brew install tech4242/tap/agenttop
-```
-
 ### Cargo
 
 ```bash
 cargo install agenttop
 ```
 
-### Binary Downloads
+### Pre-built Binaries
 
-Download pre-built binaries from [GitHub Releases](https://github.com/tech4242/agenttop/releases).
+Download from [GitHub Releases](https://github.com/tech4242/agenttop/releases), or use curl:
+
+**macOS (Apple Silicon)**
+```bash
+curl -L https://github.com/tech4242/agenttop/releases/latest/download/agenttop-darwin-arm64.tar.gz | tar xz
+sudo mv agenttop /usr/local/bin/
+```
+
+**macOS (Intel)**
+```bash
+curl -L https://github.com/tech4242/agenttop/releases/latest/download/agenttop-darwin-x86_64.tar.gz | tar xz
+sudo mv agenttop /usr/local/bin/
+```
+
+**Linux (x86_64)**
+```bash
+curl -L https://github.com/tech4242/agenttop/releases/latest/download/agenttop-linux-x86_64.tar.gz | tar xz
+sudo mv agenttop /usr/local/bin/
+```
+
+**Linux (ARM64)**
+```bash
+curl -L https://github.com/tech4242/agenttop/releases/latest/download/agenttop-linux-aarch64.tar.gz | tar xz
+sudo mv agenttop /usr/local/bin/
+```
 
 ## Usage
 
