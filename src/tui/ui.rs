@@ -9,6 +9,63 @@ use ratatui::{
 
 use super::app::App;
 
+/// Shorten model names for display (e.g., "claude-sonnet-4-20250514" -> "sonnet-4")
+fn shorten_model_name(name: &str) -> String {
+    // Try to extract the key part of the model name
+    let name = name.to_lowercase();
+
+    // Common patterns to simplify
+    if name.contains("opus") {
+        if name.contains("4.5") || name.contains("4-5") {
+            return "opus-4.5".to_string();
+        }
+        if let Some(ver) = extract_version(&name) {
+            return format!("opus-{}", ver);
+        }
+        return "opus".to_string();
+    }
+    if name.contains("sonnet") {
+        if let Some(ver) = extract_version(&name) {
+            return format!("sonnet-{}", ver);
+        }
+        return "sonnet".to_string();
+    }
+    if name.contains("haiku") {
+        if let Some(ver) = extract_version(&name) {
+            return format!("haiku-{}", ver);
+        }
+        return "haiku".to_string();
+    }
+    if name.contains("gpt-4") {
+        return "gpt-4".to_string();
+    }
+    if name.contains("gpt-3") {
+        return "gpt-3.5".to_string();
+    }
+
+    // Fallback: take first 12 chars
+    if name.len() > 12 {
+        format!("{}...", &name[..12])
+    } else {
+        name
+    }
+}
+
+/// Extract version number from model name (e.g., "4" from "claude-sonnet-4-20250514")
+fn extract_version(name: &str) -> Option<&str> {
+    // Look for patterns like "-4-" or "-3-" or "-4.5-"
+    for pattern in ["-4.5-", "-4-", "-3.5-", "-3-", "-5-"] {
+        if name.contains(pattern) {
+            return Some(pattern.trim_matches('-'));
+        }
+    }
+    // Check for version at end like "-4" or "-3"
+    if name.ends_with("-4") || name.ends_with("-5") || name.ends_with("-3") {
+        return name.rsplit('-').next();
+    }
+    None
+}
+
 pub fn draw(f: &mut Frame, app: &App) {
     let has_mcp_tools = !app.mcp_tools().is_empty();
 
@@ -56,35 +113,49 @@ fn draw_header(f: &mut Frame, app: &App, area: Rect) {
     let paused = if app.paused { " [PAUSED]" } else { "" };
     let title = format!(" agenttop{}", paused);
 
-    let filter_label = format!("[{}]", app.time_filter.label());
-    let header_content = Line::from(vec![
-        Span::styled(
-            format!("{:>width$}", filter_label, width = area.width.saturating_sub(4) as usize),
-            Style::default().fg(Color::Yellow),
-        ),
-    ]);
+    // Build header right side: active time, cost, time filter
+    let active_time = app.format_active_time();
+    let cost = app.token_metrics.total_cost_usd;
+    let filter_label = app.time_filter.label();
+
+    let mut header_spans = Vec::new();
+
+    // Add active time if available
+    if active_time != "-" {
+        header_spans.push(Span::styled("Active: ", Style::default().fg(Color::DarkGray)));
+        header_spans.push(Span::styled(active_time, Style::default().fg(Color::Cyan)));
+        header_spans.push(Span::raw("  "));
+    }
+
+    // Add cost
+    header_spans.push(Span::styled(
+        format!("${:.2}", cost),
+        Style::default().fg(Color::Yellow),
+    ));
+    header_spans.push(Span::raw("  "));
+
+    // Add time filter
+    header_spans.push(Span::styled(
+        format!("[{}]", filter_label),
+        Style::default().fg(Color::DarkGray),
+    ));
+
+    let header_content = Line::from(header_spans);
 
     let block = Block::default()
         .title(title)
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::Cyan));
 
-    let paragraph = Paragraph::new(header_content).block(block);
+    let paragraph = Paragraph::new(header_content)
+        .alignment(ratatui::layout::Alignment::Right)
+        .block(block);
     f.render_widget(paragraph, area);
 }
 
 fn draw_metrics_bar(f: &mut Frame, app: &App, area: Rect) {
     let cache_reuse = app.cache_reuse_rate();
-    let success_rate = app.overall_success_rate();
-    let avg_duration = app.average_tool_duration();
     let total_calls = app.total_tool_calls();
-
-    // Format average duration
-    let avg_str = if avg_duration < 1000.0 {
-        format!("{}ms", avg_duration as u64)
-    } else {
-        format!("{:.1}s", avg_duration / 1000.0)
-    };
 
     let mut metrics_spans = vec![
         Span::raw(" Tokens  "),
@@ -150,42 +221,78 @@ fn draw_metrics_bar(f: &mut Frame, app: &App, area: Rect) {
 
     let metrics_line = Line::from(metrics_spans);
 
-    let tools_line = Line::from(vec![
-        Span::raw(" Tools   "),
+    // Second line: API summary and tool stats
+    let api_calls = app.api_metrics.total_calls;
+    let api_errors = app.api_metrics.total_errors;
+    let api_latency = app.format_api_latency();
+
+    let mut api_spans = vec![
+        Span::raw(" API     "),
         Span::styled("Calls: ", Style::default().fg(Color::DarkGray)),
         Span::styled(
-            total_calls.to_string(),
+            api_calls.to_string(),
             Style::default().fg(Color::Cyan),
-        ),
-        Span::raw("  "),
-        Span::styled("Success: ", Style::default().fg(Color::DarkGray)),
-        Span::styled(
-            format!("{:.1}%", success_rate),
-            Style::default().fg(if success_rate > 95.0 {
-                Color::Green
-            } else if success_rate > 80.0 {
-                Color::Yellow
-            } else {
-                Color::Red
-            }),
         ),
         Span::raw("  "),
         Span::styled("Avg: ", Style::default().fg(Color::DarkGray)),
         Span::styled(
-            avg_str,
+            api_latency,
             Style::default().fg(Color::Blue),
         ),
-    ]);
+    ];
+
+    if api_errors > 0 {
+        api_spans.push(Span::raw("  "));
+        api_spans.push(Span::styled("Errors: ", Style::default().fg(Color::DarkGray)));
+        api_spans.push(Span::styled(
+            api_errors.to_string(),
+            Style::default().fg(Color::Red),
+        ));
+    }
+
+    // Add model breakdown if available
+    if !app.api_metrics.models.is_empty() {
+        api_spans.push(Span::raw("  "));
+        api_spans.push(Span::styled("Models: ", Style::default().fg(Color::DarkGray)));
+
+        // Sort models by count descending and format as "model (count)"
+        let mut models: Vec<_> = app.api_metrics.models.iter().collect();
+        models.sort_by(|a, b| b.1.cmp(a.1));
+
+        let model_strs: Vec<String> = models
+            .iter()
+            .take(3) // Show top 3 models max
+            .map(|(name, count)| {
+                // Shorten model names (e.g., "claude-sonnet-4-20250514" -> "sonnet-4")
+                let short_name = shorten_model_name(name);
+                format!("{} ({})", short_name, count)
+            })
+            .collect();
+
+        api_spans.push(Span::styled(
+            model_strs.join(", "),
+            Style::default().fg(Color::Yellow),
+        ));
+    }
+
+    api_spans.push(Span::raw("  │  "));
+    api_spans.push(Span::styled("Tools: ", Style::default().fg(Color::DarkGray)));
+    api_spans.push(Span::styled(
+        total_calls.to_string(),
+        Style::default().fg(Color::Cyan),
+    ));
+
+    let api_line = Line::from(api_spans);
 
     let block = Block::default()
         .borders(Borders::LEFT | Borders::RIGHT);
 
-    let paragraph = Paragraph::new(vec![metrics_line, tools_line]).block(block);
+    let paragraph = Paragraph::new(vec![metrics_line, api_line]).block(block);
     f.render_widget(paragraph, area);
 }
 
 fn draw_builtin_tool_table(f: &mut Frame, app: &App, area: Rect) {
-    let header_cells = ["TOOL", "CALLS", "ERR", "AVG", "RANGE", "LAST", "STATUS"].iter().map(|h| {
+    let header_cells = ["TOOL", "CALLS", "ERR", "APR%", "AVG", "RANGE", "LAST", "FREQ"].iter().map(|h| {
         Cell::from(*h).style(
             Style::default()
                 .fg(Color::Yellow)
@@ -197,7 +304,7 @@ fn draw_builtin_tool_table(f: &mut Frame, app: &App, area: Rect) {
     let now = Utc::now();
     let builtin_tools = app.builtin_tools();
 
-    // Calculate max calls from built-in tools only for the status bar
+    // Calculate max calls from built-in tools only for the frequency bar
     let max_calls = builtin_tools
         .iter()
         .map(|t| t.call_count)
@@ -249,11 +356,11 @@ fn draw_builtin_tool_table(f: &mut Frame, app: &App, area: Rect) {
                 format_duration(tool.max_duration_ms)
             );
 
-            // Create status bar (relative call frequency like htop CPU bars)
+            // Create frequency bar (relative call frequency like htop CPU bars)
             let bar_width = 10;
             let filled = ((tool.call_count as f64 / max_calls as f64) * bar_width as f64) as usize;
             let empty = bar_width - filled;
-            let status_bar = format!("{}{}", "█".repeat(filled), "░".repeat(empty));
+            let freq_bar = format!("{}{}", "█".repeat(filled), "░".repeat(empty));
 
             // Currently executing indicator
             let indicator = if tool
@@ -281,14 +388,26 @@ fn draw_builtin_tool_table(f: &mut Frame, app: &App, area: Rect) {
                 Style::default().fg(Color::Green)
             };
 
+            // Approval rate formatting
+            let approval_rate = tool.approval_rate();
+            let apr_str = format!("{:.0}%", approval_rate);
+            let apr_style = if approval_rate >= 95.0 {
+                Style::default().fg(Color::Green)
+            } else if approval_rate >= 80.0 {
+                Style::default().fg(Color::Yellow)
+            } else {
+                Style::default().fg(Color::Red)
+            };
+
             Row::new(vec![
                 Cell::from(format!("{}{}", indicator, tool.tool_name)),
                 Cell::from(tool.call_count.to_string()),
                 Cell::from(tool.error_count.to_string()).style(error_style),
+                Cell::from(apr_str).style(apr_style),
                 Cell::from(avg_str),
                 Cell::from(range_str),
                 Cell::from(last_str),
-                Cell::from(status_bar).style(Style::default().fg(Color::Cyan)),
+                Cell::from(freq_bar).style(Style::default().fg(Color::Cyan)),
             ])
             .style(style)
         })
@@ -300,10 +419,11 @@ fn draw_builtin_tool_table(f: &mut Frame, app: &App, area: Rect) {
             Constraint::Min(14),    // TOOL
             Constraint::Length(6),  // CALLS
             Constraint::Length(4),  // ERR
+            Constraint::Length(5),  // APR%
             Constraint::Length(7),  // AVG
-            Constraint::Length(13), // RANGE
+            Constraint::Length(12), // RANGE
             Constraint::Length(5),  // LAST
-            Constraint::Length(12), // STATUS
+            Constraint::Length(10), // FREQ
         ],
     )
     .header(header)
@@ -328,7 +448,7 @@ fn draw_mcp_table(f: &mut Frame, app: &App, area: Rect) {
         return;
     }
 
-    let header_cells = ["TOOL", "CALLS", "ERR", "AVG", "RANGE", "LAST", "STATUS"].iter().map(|h| {
+    let header_cells = ["TOOL", "CALLS", "ERR", "APR%", "AVG", "RANGE", "LAST", "FREQ"].iter().map(|h| {
         Cell::from(*h).style(
             Style::default()
                 .fg(Color::Yellow)
@@ -339,7 +459,7 @@ fn draw_mcp_table(f: &mut Frame, app: &App, area: Rect) {
 
     let now = Utc::now();
 
-    // Calculate max calls from MCP tools only for the status bar
+    // Calculate max calls from MCP tools only for the frequency bar
     let max_calls = mcp_tools
         .iter()
         .map(|t| t.call_count)
@@ -390,11 +510,11 @@ fn draw_mcp_table(f: &mut Frame, app: &App, area: Rect) {
                 format_duration(tool.max_duration_ms)
             );
 
-            // Create status bar
+            // Create frequency bar
             let bar_width = 10;
             let filled = ((tool.call_count as f64 / max_calls as f64) * bar_width as f64) as usize;
             let empty = bar_width - filled;
-            let status_bar = format!("{}{}", "█".repeat(filled), "░".repeat(empty));
+            let freq_bar = format!("{}{}", "█".repeat(filled), "░".repeat(empty));
 
             // Currently executing indicator
             let indicator = if tool
@@ -414,14 +534,27 @@ fn draw_mcp_table(f: &mut Frame, app: &App, area: Rect) {
                 Style::default().fg(Color::Green)
             };
 
+            // Approval rate formatting
+            let approval_rate = tool.approval_rate();
+            let apr_str = format!("{:.0}%", approval_rate);
+            let apr_style = if approval_rate >= 95.0 {
+                Style::default().fg(Color::Green)
+            } else if approval_rate >= 80.0 {
+                Style::default().fg(Color::Yellow)
+            } else {
+                Style::default().fg(Color::Red)
+            };
+
+            // Use display_name() for MCP tools to show "server:tool" format
             Row::new(vec![
-                Cell::from(format!("{}{}", indicator, tool.tool_name)),
+                Cell::from(format!("{}{}", indicator, tool.display_name())),
                 Cell::from(tool.call_count.to_string()),
                 Cell::from(tool.error_count.to_string()).style(error_style),
+                Cell::from(apr_str).style(apr_style),
                 Cell::from(avg_str),
                 Cell::from(range_str),
                 Cell::from(last_str),
-                Cell::from(status_bar).style(Style::default().fg(Color::Magenta)),
+                Cell::from(freq_bar).style(Style::default().fg(Color::Magenta)),
             ])
         })
         .collect();
@@ -432,10 +565,11 @@ fn draw_mcp_table(f: &mut Frame, app: &App, area: Rect) {
             Constraint::Min(14),    // TOOL
             Constraint::Length(6),  // CALLS
             Constraint::Length(4),  // ERR
+            Constraint::Length(5),  // APR%
             Constraint::Length(7),  // AVG
-            Constraint::Length(13), // RANGE
+            Constraint::Length(12), // RANGE
             Constraint::Length(5),  // LAST
-            Constraint::Length(12), // STATUS
+            Constraint::Length(10), // FREQ
         ],
     )
     .header(header)
@@ -486,10 +620,12 @@ fn draw_detail_popup(f: &mut Frame, app: &App) {
         }
     };
 
+    // Use display_name() for MCP tools to show "server:tool" format
+    let display_name = tool.display_name();
     let mut content = vec![
         Line::from(vec![
             Span::styled("Tool: ", Style::default().add_modifier(Modifier::BOLD)),
-            Span::raw(&tool.tool_name),
+            Span::raw(&display_name),
         ]),
         Line::from(""),
         Line::from(vec![
@@ -579,7 +715,7 @@ fn draw_detail_popup(f: &mut Frame, app: &App) {
 
     let paragraph = Paragraph::new(content).block(
         Block::default()
-            .title(format!(" {} Details ", tool.tool_name))
+            .title(format!(" {} Details ", display_name))
             .borders(Borders::ALL)
             .border_style(Style::default().fg(Color::Yellow)),
     );

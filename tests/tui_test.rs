@@ -548,13 +548,13 @@ fn test_time_filter_since() {
 fn test_app_builtin_tools() {
     let storage = StorageHandle::new_in_memory().unwrap();
 
-    // Mix of built-in and MCP tools
+    // Mix of built-in and MCP tools (any non-builtin is MCP)
     storage.record_log_events(vec![
         make_tool_event("Read", true, 50),
         make_tool_event("Write", true, 100),
         make_tool_event("Bash", true, 200),
-        make_tool_event("context7", true, 150),  // MCP
-        make_tool_event("playwright", true, 300), // MCP
+        make_tool_event("context7", true, 150),  // MCP (old style)
+        make_tool_event("playwright", true, 300), // MCP (old style)
     ]);
     std::thread::sleep(std::time::Duration::from_millis(100));
 
@@ -573,6 +573,7 @@ fn test_app_builtin_tools() {
 }
 
 /// Test that App correctly filters MCP tools
+/// Any tool not in the built-in list is considered MCP
 #[test]
 fn test_app_mcp_tools() {
     let storage = StorageHandle::new_in_memory().unwrap();

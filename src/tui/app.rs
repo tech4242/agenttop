@@ -1,7 +1,7 @@
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 
-use crate::storage::{SessionMetrics, StorageHandle, TokenMetrics, ToolMetrics};
+use crate::storage::{ApiMetrics, SessionMetrics, StorageHandle, TokenMetrics, ToolMetrics};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum TimeFilter {
@@ -45,6 +45,7 @@ pub struct App {
     pub tool_metrics: Vec<ToolMetrics>,
     pub token_metrics: TokenMetrics,
     pub session_metrics: SessionMetrics,
+    pub api_metrics: ApiMetrics,
     pub selected_index: usize,
     pub sort_by: SortColumn,
     pub sort_ascending: bool,
@@ -61,6 +62,7 @@ impl App {
             tool_metrics: Vec::new(),
             token_metrics: TokenMetrics::default(),
             session_metrics: SessionMetrics::default(),
+            api_metrics: ApiMetrics::default(),
             selected_index: 0,
             sort_by: SortColumn::Calls,
             sort_ascending: false,
@@ -79,6 +81,7 @@ impl App {
         self.tool_metrics = self.storage.get_tool_metrics(self.time_filter.since())?;
         self.token_metrics = self.storage.get_token_metrics(self.time_filter.since())?;
         self.session_metrics = self.storage.get_session_metrics(self.time_filter.since())?;
+        self.api_metrics = self.storage.get_api_metrics(self.time_filter.since())?;
         self.last_refresh = Utc::now();
 
         // Sort the tools
@@ -256,5 +259,33 @@ impl App {
             .get_last_tool_error(&tool.tool_name)
             .ok()
             .flatten()
+    }
+
+    /// Format active time as human-readable string (e.g., "1h 23m")
+    pub fn format_active_time(&self) -> String {
+        let secs = self.session_metrics.active_time_secs;
+        if secs == 0 {
+            return "-".to_string();
+        }
+        let hours = secs / 3600;
+        let mins = (secs % 3600) / 60;
+        if hours > 0 {
+            format!("{}h {}m", hours, mins)
+        } else {
+            format!("{}m", mins)
+        }
+    }
+
+    /// Format API latency as human-readable string
+    pub fn format_api_latency(&self) -> String {
+        let ms = self.api_metrics.avg_latency_ms;
+        if ms == 0.0 {
+            return "-".to_string();
+        }
+        if ms < 1000.0 {
+            format!("{}ms", ms as u64)
+        } else {
+            format!("{:.1}s", ms / 1000.0)
+        }
     }
 }

@@ -650,6 +650,8 @@ fn test_tool_metrics_is_builtin() {
             max_duration_ms: 0.0,
             success_count: 1,
             error_count: 0,
+            approved_count: 0,
+            rejected_count: 0,
         };
         assert!(metrics.is_builtin(), "{} should be classified as built-in", tool_name);
         assert!(!metrics.is_mcp(), "{} should NOT be classified as MCP", tool_name);
@@ -657,11 +659,19 @@ fn test_tool_metrics_is_builtin() {
 }
 
 /// Test that MCP tools are correctly classified
+/// Any tool not in the built-in list is considered MCP
 #[test]
 fn test_tool_metrics_is_mcp() {
     use agenttop::storage::ToolMetrics;
 
-    let mcp_tools = vec!["context7", "playwright", "my_custom_tool", "TestRead", "sqlite_query"];
+    // Any non-builtin tool is MCP - both old-style and new mcp__ format
+    let mcp_tools = vec![
+        "context7",
+        "playwright",
+        "my_custom_tool",
+        "mcp__context7__resolve-library-id",
+        "mcp__context7__query-docs",
+    ];
 
     for tool_name in mcp_tools {
         let metrics = ToolMetrics {
@@ -673,6 +683,8 @@ fn test_tool_metrics_is_mcp() {
             max_duration_ms: 0.0,
             success_count: 1,
             error_count: 0,
+            approved_count: 0,
+            rejected_count: 0,
         };
         assert!(metrics.is_mcp(), "{} should be classified as MCP", tool_name);
         assert!(!metrics.is_builtin(), "{} should NOT be classified as built-in", tool_name);

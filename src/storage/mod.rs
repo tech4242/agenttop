@@ -1,6 +1,8 @@
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use duckdb::{Connection, params};
+use once_cell::sync::Lazy;
+use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -15,6 +17,52 @@ const BUILTIN_TOOLS: &[&str] = &[
     "KillShell", "EnterPlanMode", "ExitPlanMode", "TaskOutput",
 ];
 
+/// Regex to parse MCP tool names in format: mcp__<server>__<tool> or mcp__plugin_<plugin>_<server>__<tool>
+static MCP_TOOL_REGEX: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"^mcp__(?:plugin_\w+_)?(\w+)__(.+)$").unwrap());
+
+/// Parsed MCP tool name containing server and tool components
+#[derive(Debug, Clone, PartialEq)]
+pub struct McpToolInfo {
+    pub server_name: String,
+    pub tool_name: String,
+}
+
+/// Parse an MCP tool name to extract server and tool name.
+/// Returns None if the name doesn't match MCP format.
+///
+/// # Examples
+/// ```ignore
+/// parse_mcp_tool_name("mcp__context7__resolve-library-id")
+///   => Some(McpToolInfo { server_name: "context7", tool_name: "resolve-library-id" })
+/// parse_mcp_tool_name("mcp__plugin_foo_myserver__my-tool")
+///   => Some(McpToolInfo { server_name: "myserver", tool_name: "my-tool" })
+/// parse_mcp_tool_name("Read")
+///   => None
+/// ```
+pub fn parse_mcp_tool_name(name: &str) -> Option<McpToolInfo> {
+    MCP_TOOL_REGEX.captures(name).map(|caps| McpToolInfo {
+        server_name: caps.get(1).unwrap().as_str().to_string(),
+        tool_name: caps.get(2).unwrap().as_str().to_string(),
+    })
+}
+
+/// Check if a tool name is an MCP tool (uses mcp__ prefix)
+pub fn is_mcp_tool_name(name: &str) -> bool {
+    name.starts_with("mcp__")
+}
+
+/// Get a display-friendly name for a tool.
+/// For MCP tools, returns "server:tool" format.
+/// For built-in tools, returns the name as-is.
+pub fn get_tool_display_name(name: &str) -> String {
+    if let Some(info) = parse_mcp_tool_name(name) {
+        format!("{}:{}", info.server_name, info.tool_name)
+    } else {
+        name.to_string()
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolMetrics {
     pub tool_name: String,
@@ -25,6 +73,10 @@ pub struct ToolMetrics {
     pub max_duration_ms: f64,
     pub success_count: u64,
     pub error_count: u64,
+    /// Number of calls that were approved (decision = 'approved' or 'auto_approved')
+    pub approved_count: u64,
+    /// Number of calls that were rejected (decision = 'rejected')
+    pub rejected_count: u64,
 }
 
 impl ToolMetrics {
@@ -33,7 +85,32 @@ impl ToolMetrics {
     }
 
     pub fn is_mcp(&self) -> bool {
+        // Any tool not in the built-in list is considered MCP
         !self.is_builtin()
+    }
+
+    /// Calculate approval rate as a percentage (0-100).
+    /// Returns 100.0 if no decision data is available (assumes all approved).
+    pub fn approval_rate(&self) -> f64 {
+        let total_decisions = self.approved_count + self.rejected_count;
+        if total_decisions == 0 {
+            // No decision data available, assume all approved
+            100.0
+        } else {
+            (self.approved_count as f64 / total_decisions as f64) * 100.0
+        }
+    }
+
+    /// Get the MCP server name if this tool uses the mcp__server__tool format
+    pub fn mcp_server_name(&self) -> Option<String> {
+        parse_mcp_tool_name(&self.tool_name).map(|info| info.server_name)
+    }
+
+    /// Get a display-friendly version of the tool name.
+    /// For MCP tools with mcp__server__tool format, returns "server:tool".
+    /// Otherwise returns the name as-is.
+    pub fn display_name(&self) -> String {
+        get_tool_display_name(&self.tool_name)
     }
 }
 
@@ -50,6 +127,16 @@ pub struct TokenMetrics {
 pub struct SessionMetrics {
     pub lines_of_code: i64,
     pub commit_count: u64,
+    pub active_time_secs: u64,
+}
+
+/// API request metrics aggregated from api_request events
+#[derive(Debug, Clone, Default)]
+pub struct ApiMetrics {
+    pub total_calls: u64,
+    pub total_errors: u64,
+    pub avg_latency_ms: f64,
+    pub models: HashMap<String, u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -93,6 +180,10 @@ enum StorageCommand {
     GetSessionMetrics {
         since: Option<DateTime<Utc>>,
         tx: mpsc::Sender<Result<SessionMetrics>>,
+    },
+    GetApiMetrics {
+        since: Option<DateTime<Utc>>,
+        tx: mpsc::Sender<Result<ApiMetrics>>,
     },
     Shutdown,
 }
@@ -186,6 +277,12 @@ impl StorageHandle {
         self.sender.send(StorageCommand::GetSessionMetrics { since, tx })?;
         rx.recv()?
     }
+
+    pub fn get_api_metrics(&self, since: Option<DateTime<Utc>>) -> Result<ApiMetrics> {
+        let (tx, rx) = mpsc::channel();
+        self.sender.send(StorageCommand::GetApiMetrics { since, tx })?;
+        rx.recv()?
+    }
 }
 
 fn run_storage_actor(storage: Storage, receiver: mpsc::Receiver<StorageCommand>) -> Result<()> {
@@ -227,6 +324,9 @@ fn run_storage_actor(storage: Storage, receiver: mpsc::Receiver<StorageCommand>)
             }
             StorageCommand::GetSessionMetrics { since, tx } => {
                 let _ = tx.send(storage.get_session_metrics(since));
+            }
+            StorageCommand::GetApiMetrics { since, tx } => {
+                let _ = tx.send(storage.get_api_metrics(since));
             }
             StorageCommand::Shutdown => break,
         }
@@ -392,12 +492,13 @@ impl Storage {
         let query = format!(
             r#"
             WITH combined_events AS (
-                -- Legacy tool_events table
+                -- Legacy tool_events table (no decision tracking)
                 SELECT
                     tool_name,
                     timestamp,
                     duration_ms,
-                    success
+                    success,
+                    NULL as decision
                 FROM tool_events
                 WHERE 1=1 {time_clause}
 
@@ -412,7 +513,8 @@ impl Storage {
                         WHEN json_extract_string(attributes, '$.success') IN ('true', '1') THEN true
                         WHEN json_extract(attributes, '$.success') = true THEN true
                         ELSE false
-                    END as success
+                    END as success,
+                    json_extract_string(attributes, '$.decision') as decision
                 FROM log_events
                 WHERE event_name LIKE '%tool_result' {time_clause}
             )
@@ -424,7 +526,9 @@ impl Storage {
                 MIN(duration_ms) as min_duration_ms,
                 MAX(duration_ms) as max_duration_ms,
                 SUM(CASE WHEN success THEN 1 ELSE 0 END) as success_count,
-                SUM(CASE WHEN NOT success THEN 1 ELSE 0 END) as error_count
+                SUM(CASE WHEN NOT success THEN 1 ELSE 0 END) as error_count,
+                SUM(CASE WHEN decision IN ('approved', 'auto_approved') THEN 1 ELSE 0 END) as approved_count,
+                SUM(CASE WHEN decision = 'rejected' THEN 1 ELSE 0 END) as rejected_count
             FROM combined_events
             GROUP BY tool_name
             ORDER BY call_count DESC
@@ -460,6 +564,8 @@ impl Storage {
                 max_duration_ms: row.get(5)?,
                 success_count: row.get::<_, i64>(6)? as u64,
                 error_count: row.get::<_, i64>(7)? as u64,
+                approved_count: row.get::<_, i64>(8)? as u64,
+                rejected_count: row.get::<_, i64>(9)? as u64,
             })
         })?;
 
@@ -582,10 +688,257 @@ impl Storage {
             match metric_name.as_str() {
                 "lines_of_code" | "loc" => metrics.lines_of_code = value,
                 "commits" | "commit_count" => metrics.commit_count = value as u64,
+                "active_time" => metrics.active_time_secs = value as u64,
                 _ => {}
             }
         }
 
         Ok(metrics)
+    }
+
+    /// Get API metrics from api_request and api_error events
+    fn get_api_metrics(&self, since: Option<DateTime<Utc>>) -> Result<ApiMetrics> {
+        let time_clause = since
+            .map(|dt| format!("AND timestamp >= '{}'", dt.to_rfc3339()))
+            .unwrap_or_default();
+
+        // Query api_request events for call count, latency, and model breakdown
+        let api_query = format!(
+            r#"
+            SELECT
+                COUNT(*) as call_count,
+                AVG(CAST(COALESCE(json_extract(attributes, '$.latency_ms'), json_extract(attributes, '$.duration_ms'), '0') AS DOUBLE)) as avg_latency,
+                json_extract_string(attributes, '$.model') as model
+            FROM log_events
+            WHERE event_name LIKE '%api_request' {time_clause}
+            GROUP BY model
+            "#
+        );
+
+        let mut stmt = self.conn.prepare(&api_query)?;
+        let mut metrics = ApiMetrics::default();
+
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, i64>(0)? as u64,
+                row.get::<_, f64>(1).unwrap_or(0.0),
+                row.get::<_, Option<String>>(2)?,
+            ))
+        })?;
+
+        let mut total_latency_sum = 0.0;
+        for row in rows {
+            let (count, avg_latency, model) = row?;
+            metrics.total_calls += count;
+            total_latency_sum += avg_latency * count as f64;
+            if let Some(m) = model {
+                *metrics.models.entry(m).or_insert(0) += count;
+            }
+        }
+
+        if metrics.total_calls > 0 {
+            metrics.avg_latency_ms = total_latency_sum / metrics.total_calls as f64;
+        }
+
+        // Query api_error events for error count
+        let error_query = format!(
+            r#"
+            SELECT COUNT(*) as error_count
+            FROM log_events
+            WHERE event_name LIKE '%api_error' {time_clause}
+            "#
+        );
+
+        let error_count: i64 = self.conn.query_row(&error_query, [], |row| row.get(0))?;
+        metrics.total_errors = error_count as u64;
+
+        Ok(metrics)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_mcp_tool_name_standard() {
+        let result = parse_mcp_tool_name("mcp__context7__resolve-library-id");
+        assert_eq!(
+            result,
+            Some(McpToolInfo {
+                server_name: "context7".to_string(),
+                tool_name: "resolve-library-id".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn test_parse_mcp_tool_name_query_docs() {
+        let result = parse_mcp_tool_name("mcp__context7__query-docs");
+        assert_eq!(
+            result,
+            Some(McpToolInfo {
+                server_name: "context7".to_string(),
+                tool_name: "query-docs".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn test_parse_mcp_tool_name_with_plugin() {
+        let result = parse_mcp_tool_name("mcp__plugin_foo_myserver__my-tool");
+        assert_eq!(
+            result,
+            Some(McpToolInfo {
+                server_name: "myserver".to_string(),
+                tool_name: "my-tool".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn test_parse_mcp_tool_name_builtin_returns_none() {
+        assert_eq!(parse_mcp_tool_name("Read"), None);
+        assert_eq!(parse_mcp_tool_name("Write"), None);
+        assert_eq!(parse_mcp_tool_name("Bash"), None);
+    }
+
+    #[test]
+    fn test_parse_mcp_tool_name_invalid_format() {
+        assert_eq!(parse_mcp_tool_name("mcp_tool"), None);
+        assert_eq!(parse_mcp_tool_name("mcp__server"), None);
+        assert_eq!(parse_mcp_tool_name("mcp__"), None);
+    }
+
+    #[test]
+    fn test_is_mcp_tool_name() {
+        assert!(is_mcp_tool_name("mcp__context7__resolve-library-id"));
+        assert!(is_mcp_tool_name("mcp__server__tool"));
+        assert!(!is_mcp_tool_name("Read"));
+        assert!(!is_mcp_tool_name("mcp_tool"));
+    }
+
+    #[test]
+    fn test_get_tool_display_name_mcp() {
+        assert_eq!(
+            get_tool_display_name("mcp__context7__resolve-library-id"),
+            "context7:resolve-library-id"
+        );
+        assert_eq!(
+            get_tool_display_name("mcp__context7__query-docs"),
+            "context7:query-docs"
+        );
+    }
+
+    #[test]
+    fn test_get_tool_display_name_builtin() {
+        assert_eq!(get_tool_display_name("Read"), "Read");
+        assert_eq!(get_tool_display_name("Bash"), "Bash");
+    }
+
+    #[test]
+    fn test_tool_metrics_is_mcp() {
+        // Any non-builtin tool is considered MCP
+        let mcp_tool = ToolMetrics {
+            tool_name: "mcp__context7__query-docs".to_string(),
+            call_count: 1,
+            last_call: None,
+            avg_duration_ms: 100.0,
+            min_duration_ms: 50.0,
+            max_duration_ms: 150.0,
+            success_count: 1,
+            error_count: 0,
+            approved_count: 1,
+            rejected_count: 0,
+        };
+        assert!(mcp_tool.is_mcp());
+        assert!(!mcp_tool.is_builtin());
+        assert_eq!(mcp_tool.mcp_server_name(), Some("context7".to_string()));
+        assert_eq!(mcp_tool.display_name(), "context7:query-docs");
+
+        // Generic MCP tool names (without mcp__ prefix) are also MCP
+        let generic_mcp = ToolMetrics {
+            tool_name: "context7".to_string(),
+            call_count: 1,
+            last_call: None,
+            avg_duration_ms: 100.0,
+            min_duration_ms: 50.0,
+            max_duration_ms: 150.0,
+            success_count: 1,
+            error_count: 0,
+            approved_count: 0,
+            rejected_count: 0,
+        };
+        assert!(generic_mcp.is_mcp());
+        assert!(!generic_mcp.is_builtin());
+        assert_eq!(generic_mcp.display_name(), "context7"); // No transformation for non-standard format
+    }
+
+    #[test]
+    fn test_tool_metrics_is_builtin() {
+        let builtin_tool = ToolMetrics {
+            tool_name: "Read".to_string(),
+            call_count: 1,
+            last_call: None,
+            avg_duration_ms: 50.0,
+            min_duration_ms: 25.0,
+            max_duration_ms: 75.0,
+            success_count: 1,
+            error_count: 0,
+            approved_count: 1,
+            rejected_count: 0,
+        };
+        assert!(!builtin_tool.is_mcp());
+        assert!(builtin_tool.is_builtin());
+        assert_eq!(builtin_tool.mcp_server_name(), None);
+        assert_eq!(builtin_tool.display_name(), "Read");
+    }
+
+    #[test]
+    fn test_approval_rate() {
+        // Tool with all approved
+        let all_approved = ToolMetrics {
+            tool_name: "Read".to_string(),
+            call_count: 10,
+            last_call: None,
+            avg_duration_ms: 50.0,
+            min_duration_ms: 25.0,
+            max_duration_ms: 75.0,
+            success_count: 10,
+            error_count: 0,
+            approved_count: 10,
+            rejected_count: 0,
+        };
+        assert!((all_approved.approval_rate() - 100.0).abs() < 0.01);
+
+        // Tool with some rejections
+        let some_rejected = ToolMetrics {
+            tool_name: "Bash".to_string(),
+            call_count: 10,
+            last_call: None,
+            avg_duration_ms: 50.0,
+            min_duration_ms: 25.0,
+            max_duration_ms: 75.0,
+            success_count: 8,
+            error_count: 2,
+            approved_count: 8,
+            rejected_count: 2,
+        };
+        assert!((some_rejected.approval_rate() - 80.0).abs() < 0.01);
+
+        // Tool with no decision data (should return 100%)
+        let no_decisions = ToolMetrics {
+            tool_name: "Edit".to_string(),
+            call_count: 5,
+            last_call: None,
+            avg_duration_ms: 50.0,
+            min_duration_ms: 25.0,
+            max_duration_ms: 75.0,
+            success_count: 5,
+            error_count: 0,
+            approved_count: 0,
+            rejected_count: 0,
+        };
+        assert!((no_decisions.approval_rate() - 100.0).abs() < 0.01);
     }
 }

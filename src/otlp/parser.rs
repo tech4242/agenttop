@@ -402,6 +402,27 @@ fn parse_logs_proto(request: ExportLogsServiceRequest) -> Result<Vec<LogEvent>> 
                     .and_then(|a| a.value.as_ref())
                     .and_then(get_string_value);
 
+                // Debug logging for tool events to help diagnose MCP tool name format
+                if event_name
+                    .as_ref()
+                    .map(|n| n.contains("tool"))
+                    .unwrap_or(false)
+                {
+                    tracing::debug!(
+                        "Tool event received - event_name: {:?}, attributes: {:?}",
+                        event_name,
+                        record
+                            .attributes
+                            .iter()
+                            .filter_map(|a| a
+                                .value
+                                .as_ref()
+                                .and_then(get_string_value)
+                                .map(|v| (a.key.clone(), v)))
+                            .collect::<Vec<_>>()
+                    );
+                }
+
                 // Store ALL attributes as a HashMap for query-time filtering
                 let attributes: HashMap<String, String> = record
                     .attributes

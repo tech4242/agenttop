@@ -24,24 +24,22 @@
 
 ---
 
-A terminal-native observability dashboard for Claude Code. Real-time visibility into tool usage, token consumption, and productivity metrics.
+A terminal-native observability dashboard for AI coding agents. Real-time visibility into tool usage, token consumption, and productivity metrics.
 
 ```
-┌─ agenttop ─────────────────────────────────────── Session: 2h 15m ─ $4.23 ─┐
-│ Tokens [████████████████████░░░░░░░░░░░] 156K/500K                          │
-│         In: 89K │ Out: 42K │ Cache: 25K (94% hit)                           │
-├─────────────────────────────────────────────────────────────────────────────┤
-│ TOOL              CALLS   LAST     AVG      STATUS                          │
-│ ▶ Bash              47     2s     234ms    ████████████████░░░░             │
-│   Read              89     5s      12ms    ██████████░░░░░░░░░░             │
-│   Edit              34    10s      45ms    ███████░░░░░░░░░░░░░             │
-│   Write             12    30s      67ms    ███░░░░░░░░░░░░░░░░░             │
-│   Grep              28     8s      18ms    █████░░░░░░░░░░░░░░░             │
-│   WebSearch          3     1m     890ms    █░░░░░░░░░░░░░░░░░░░             │
-│   mcp__github       15    20s     345ms    ████░░░░░░░░░░░░░░░░             │
-├─────────────────────────────────────────────────────────────────────────────┤
-│ Productivity: 47x │ Lines: +2,847 │ Commits: 3 │ PRs: 1 │ Tools: 234       │
-└───── [q]uit [s]ort [p]ause [d]etail [r]eset ────────────────────────────────┘
+┌─ agenttop ──────────────────────────────────────────────────────── $4.23 ─┐
+│ Tokens  In: 89K  Out: 42K  Cache: 25K (94% reuse)  Session Total: 156K   │
+├──────────────────────────────────────────────────────────────────────────┤
+│ API: 47 calls │ 1.2s avg │ 2 errors │ Active: 1h 47m                     │
+├──────────────────────────────────────────────────────────────────────────┤
+│ TOOL         CALLS  ERR  APR%   AVG      RANGE        LAST   FREQ        │
+│ ▶ Read         89    0  100%    12ms    5ms-45ms      5s    ██████████░░ │
+│   Bash         47    1   98%   234ms    50ms-2.1s     2s    █████░░░░░░░ │
+│   Edit         34    2   94%    45ms   10ms-200ms    10s    ████░░░░░░░░ │
+├──────────────────────────────────────────────────────────────────────────┤
+│ MCP Tools                                                                │
+│   context7:*   15    1   93%   345ms  100ms-800ms    20s    ██████████░░ │
+└───── [q]uit [s]ort [p]ause [d]etail [t]ime [r]eset ──────────────────────┘
 ```
 
 ## Installation
@@ -74,17 +72,46 @@ That's it! agenttop automatically:
 2. Starts an OTLP receiver on port 4318
 3. Shows real-time metrics in a terminal dashboard
 
+## Supported Agents
+
+| Agent | OTLP Support | Signals | MCP Tools | Key Metrics |
+|-------|--------------|---------|-----------|-------------|
+| **Claude Code** | ✅ Full | Metrics, Logs | Anonymized (`mcp_tool`) | tokens, cost, tools, LOC |
+| **OpenAI Codex CLI** | ✅ Partial | Logs, Traces | Full names | tokens, tools, prompts |
+| **Gemini CLI** | ✅ Full | Metrics, Logs | Full names + `tool_type` | 40+ metrics |
+| **Qwen Code** | ✅ Full | Metrics, Logs | Unknown | tokens, diff stats |
+| **Cline** | ⚠️ Via provider | Logs, Metrics | N/A | events, errors |
+| **Cursor** | ❌ Proprietary | Admin API only | N/A | aggregate stats |
+| **GitHub Copilot** | ❌ Proprietary | REST API only | N/A | usage rates |
+| **Aider** | ❌ None | - | - | - |
+
 ## Features
 
-- **Token Usage Bar** - Visual representation of context window usage
+- **Token Tracking** - Input, output, and cache token metrics
 - **Tool Table** - Real-time tool call metrics with:
-  - Call count
+  - Call count and error count
   - Time since last call
-  - Average duration
-  - Activity sparkline
-- **Productivity Metrics** - Lines of code, commits, PRs
-- **Cache Hit Rate** - Prompt caching efficiency
+  - Average duration and duration range
+  - Relative frequency bar
+- **API Metrics** - API calls, latency, active time
+- **Productivity Metrics** - Lines of code, commits
+- **Cache Reuse Rate** - Prompt caching efficiency
 - **Session Cost** - Running cost estimate
+
+## Limitations
+
+### MCP Tool Names (Claude Code)
+Claude Code anonymizes MCP tool names in telemetry for privacy (v2.1.2+).
+All MCP tools appear as `mcp_tool`. Other agents (Codex, Gemini) expose full names.
+
+### Context Window Usage
+Claude Code does NOT expose context window usage or compaction status in telemetry.
+The ~200K context window and ~75% compaction threshold are internal only.
+agenttop shows cumulative session tokens, not context window remaining.
+
+### Approval Rate
+The `decision` attribute for tool approval tracking is not consistently present
+in all Claude Code versions. APR% may show as 100% when data is unavailable.
 
 ## Keyboard Shortcuts
 
@@ -119,18 +146,19 @@ Claude Code                        agenttop
 
 | Metric | Description |
 |--------|-------------|
-| `claude_code.token.usage` | Input/output/cache tokens |
+| `claude_code.token.usage` | Input/output/cache tokens (by `type` attribute) |
 | `claude_code.cost.usage` | Session cost in USD |
+| `claude_code.active_time.total` | Active coding time in seconds |
 | `claude_code.lines_of_code.count` | Lines added/removed |
 | `claude_code.commit.count` | Git commits created |
-| `claude_code.pull_request.count` | PRs created |
 
 ### Events Collected
 
 | Event | Description |
 |-------|-------------|
-| `claude_code.tool_result` | Tool invocations with success/duration |
-| `claude_code.api_request` | API calls with token counts |
+| `tool_result` / `claude_code.tool_result` | Tool invocations with success/duration |
+| `api_request` | API calls with model, latency, token counts |
+| `api_error` | API errors with error type and message |
 
 ## Configuration
 
