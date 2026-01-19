@@ -47,11 +47,6 @@ pub fn parse_mcp_tool_name(name: &str) -> Option<McpToolInfo> {
     })
 }
 
-/// Check if a tool name is an MCP tool (uses mcp__ prefix)
-pub fn is_mcp_tool_name(name: &str) -> bool {
-    name.starts_with("mcp__")
-}
-
 /// Get a display-friendly name for a tool.
 /// For MCP tools, returns "server:tool" format.
 /// For built-in tools, returns the name as-is.
@@ -99,11 +94,6 @@ impl ToolMetrics {
         } else {
             (self.approved_count as f64 / total_decisions as f64) * 100.0
         }
-    }
-
-    /// Get the MCP server name if this tool uses the mcp__server__tool format
-    pub fn mcp_server_name(&self) -> Option<String> {
-        parse_mcp_tool_name(&self.tool_name).map(|info| info.server_name)
     }
 
     /// Get a display-friendly version of the tool name.
@@ -811,14 +801,6 @@ mod tests {
     }
 
     #[test]
-    fn test_is_mcp_tool_name() {
-        assert!(is_mcp_tool_name("mcp__context7__resolve-library-id"));
-        assert!(is_mcp_tool_name("mcp__server__tool"));
-        assert!(!is_mcp_tool_name("Read"));
-        assert!(!is_mcp_tool_name("mcp_tool"));
-    }
-
-    #[test]
     fn test_get_tool_display_name_mcp() {
         assert_eq!(
             get_tool_display_name("mcp__context7__resolve-library-id"),
@@ -853,7 +835,6 @@ mod tests {
         };
         assert!(mcp_tool.is_mcp());
         assert!(!mcp_tool.is_builtin());
-        assert_eq!(mcp_tool.mcp_server_name(), Some("context7".to_string()));
         assert_eq!(mcp_tool.display_name(), "context7:query-docs");
 
         // Generic MCP tool names (without mcp__ prefix) are also MCP
@@ -890,7 +871,6 @@ mod tests {
         };
         assert!(!builtin_tool.is_mcp());
         assert!(builtin_tool.is_builtin());
-        assert_eq!(builtin_tool.mcp_server_name(), None);
         assert_eq!(builtin_tool.display_name(), "Read");
     }
 

@@ -162,7 +162,7 @@ fn draw_metrics_bar(f: &mut Frame, app: &App, area: Rect) {
         Span::styled("In: ", Style::default().fg(Color::DarkGray)),
         Span::styled(
             format!("{:.1}K", app.token_metrics.input_tokens as f64 / 1000.0),
-            Style::default().fg(Color::Blue),
+            Style::default().fg(Color::LightBlue),
         ),
         Span::raw("  "),
         Span::styled("Out: ", Style::default().fg(Color::DarkGray)),
@@ -237,7 +237,7 @@ fn draw_metrics_bar(f: &mut Frame, app: &App, area: Rect) {
         Span::styled("Avg: ", Style::default().fg(Color::DarkGray)),
         Span::styled(
             api_latency,
-            Style::default().fg(Color::Blue),
+            Style::default().fg(Color::LightBlue),
         ),
     ];
 
@@ -671,21 +671,21 @@ fn draw_detail_popup(f: &mut Frame, app: &App) {
             Span::raw("Avg Duration: "),
             Span::styled(
                 format_duration(tool.avg_duration_ms),
-                Style::default().fg(Color::Blue),
+                Style::default().fg(Color::LightBlue),
             ),
         ]),
         Line::from(vec![
             Span::raw("Min Duration: "),
             Span::styled(
                 format_duration(tool.min_duration_ms),
-                Style::default().fg(Color::Blue),
+                Style::default().fg(Color::LightBlue),
             ),
         ]),
         Line::from(vec![
             Span::raw("Max Duration: "),
             Span::styled(
                 format_duration(tool.max_duration_ms),
-                Style::default().fg(Color::Blue),
+                Style::default().fg(Color::LightBlue),
             ),
         ]),
     ];
