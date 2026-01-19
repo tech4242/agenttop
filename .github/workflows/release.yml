@@ -44,13 +44,13 @@ jobs:
           sudo apt-get install -y gcc-aarch64-linux-gnu
 
       - name: Build
-        run: cargo build --release --target ${{ matrix.target }}
+        run: cargo build --profile dist --target ${{ matrix.target }}
         env:
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
 
       - name: Package
         run: |
-          cd target/${{ matrix.target }}/release
+          cd target/${{ matrix.target }}/dist
           tar -czvf ${{ matrix.artifact }}.tar.gz agenttop
           mv ${{ matrix.artifact }}.tar.gz ../../../
 

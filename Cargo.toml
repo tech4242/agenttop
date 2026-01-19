@@ -47,6 +47,10 @@ regex = "1"
 prost-build = "0.13"
 
 [profile.release]
+strip = true
+
+# Full optimization profile for distribution (CD only)
+[profile.dist]
+inherits = "release"
 lto = true
 codegen-units = 1
-strip = true
