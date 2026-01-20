@@ -9,30 +9,9 @@ use std::path::PathBuf;
 use std::sync::mpsc;
 use std::thread;
 
-/// Known built-in Claude Code tools. Tools not in this list are classified as MCP tools.
-const BUILTIN_TOOLS: &[&str] = &[
-    "Read",
-    "Write",
-    "Edit",
-    "Bash",
-    "Glob",
-    "Grep",
-    "Task",
-    "TodoRead",
-    "TodoWrite",
-    "WebFetch",
-    "WebSearch",
-    "Agent",
-    "Skill",
-    "AskUser",
-    "AskUserQuestion",
-    "MultiEdit",
-    "NotebookEdit",
-    "KillShell",
-    "EnterPlanMode",
-    "ExitPlanMode",
-    "TaskOutput",
-];
+use crate::providers::{
+    PROVIDER_REGISTRY, TOKEN_CACHE_READ, TOKEN_CACHE_WRITE, TOKEN_INPUT, TOKEN_OUTPUT,
+};
 
 /// Regex to parse MCP tool names in format: mcp__<server>__<tool> or mcp__plugin_<plugin>_<server>__<tool>
 static MCP_TOOL_REGEX: Lazy<Regex> =
@@ -93,7 +72,7 @@ pub struct ToolMetrics {
 
 impl ToolMetrics {
     pub fn is_builtin(&self) -> bool {
-        BUILTIN_TOOLS.contains(&self.tool_name.as_str())
+        PROVIDER_REGISTRY.is_any_builtin_tool(&self.tool_name)
     }
 
     pub fn is_mcp(&self) -> bool {
@@ -619,15 +598,14 @@ impl Storage {
 
         for row in rows {
             let (token_type, count) = row?;
-            match token_type.as_str() {
-                "input" | "prompt_tokens" | "input_tokens" => metrics.input_tokens += count,
-                "output" | "completion_tokens" | "output_tokens" => metrics.output_tokens += count,
-                "cacheRead" | "cache_read" | "cache_hit" => metrics.cache_read_tokens += count,
-                "cacheCreation" | "cache_creation" | "cache_write" => {
-                    metrics.cache_creation_tokens += count
-                }
-                other => {
-                    tracing::warn!("Unknown token type: {}", other);
+            // Use provider registry to normalize token types
+            match PROVIDER_REGISTRY.normalize_token_type(&token_type) {
+                Some(TOKEN_INPUT) => metrics.input_tokens += count,
+                Some(TOKEN_OUTPUT) => metrics.output_tokens += count,
+                Some(TOKEN_CACHE_READ) => metrics.cache_read_tokens += count,
+                Some(TOKEN_CACHE_WRITE) => metrics.cache_creation_tokens += count,
+                _ => {
+                    tracing::warn!("Unknown token type: {}", token_type);
                 }
             }
         }

@@ -4,5 +4,6 @@
 
 pub mod config;
 pub mod otlp;
+pub mod providers;
 pub mod storage;
 pub mod tui;

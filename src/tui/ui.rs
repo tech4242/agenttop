@@ -8,63 +8,7 @@ use ratatui::{
 };
 
 use super::app::App;
-
-/// Shorten model names for display (e.g., "claude-sonnet-4-20250514" -> "sonnet-4")
-fn shorten_model_name(name: &str) -> String {
-    // Try to extract the key part of the model name
-    let name = name.to_lowercase();
-
-    // Common patterns to simplify
-    if name.contains("opus") {
-        if name.contains("4.5") || name.contains("4-5") {
-            return "opus-4.5".to_string();
-        }
-        if let Some(ver) = extract_version(&name) {
-            return format!("opus-{}", ver);
-        }
-        return "opus".to_string();
-    }
-    if name.contains("sonnet") {
-        if let Some(ver) = extract_version(&name) {
-            return format!("sonnet-{}", ver);
-        }
-        return "sonnet".to_string();
-    }
-    if name.contains("haiku") {
-        if let Some(ver) = extract_version(&name) {
-            return format!("haiku-{}", ver);
-        }
-        return "haiku".to_string();
-    }
-    if name.contains("gpt-4") {
-        return "gpt-4".to_string();
-    }
-    if name.contains("gpt-3") {
-        return "gpt-3.5".to_string();
-    }
-
-    // Fallback: take first 12 chars
-    if name.len() > 12 {
-        format!("{}...", &name[..12])
-    } else {
-        name
-    }
-}
-
-/// Extract version number from model name (e.g., "4" from "claude-sonnet-4-20250514")
-fn extract_version(name: &str) -> Option<&str> {
-    // Look for patterns like "-4-" or "-3-" or "-4.5-"
-    for pattern in ["-4.5-", "-4-", "-3.5-", "-3-", "-5-"] {
-        if name.contains(pattern) {
-            return Some(pattern.trim_matches('-'));
-        }
-    }
-    // Check for version at end like "-4" or "-3"
-    if name.ends_with("-4") || name.ends_with("-5") || name.ends_with("-3") {
-        return name.rsplit('-').next();
-    }
-    None
-}
+use crate::providers::PROVIDER_REGISTRY;
 
 pub fn draw(f: &mut Frame, app: &App) {
     let has_mcp_tools = !app.mcp_tools().is_empty();
@@ -113,12 +57,25 @@ fn draw_header(f: &mut Frame, app: &App, area: Rect) {
     let paused = if app.paused { " [PAUSED]" } else { "" };
     let title = format!(" agenttop{}", paused);
 
-    // Build header right side: active time, cost, time filter
+    // Build header right side: agent, active time, time filter
     let active_time = app.format_active_time();
-    let cost = app.token_metrics.total_cost_usd;
     let filter_label = app.time_filter.label();
 
     let mut header_spans = Vec::new();
+
+    // Add agent display if available
+    if let Some(agent_id) = app.current_agent() {
+        let agent_name = PROVIDER_REGISTRY
+            .get(agent_id)
+            .map(|p| p.name())
+            .unwrap_or(agent_id);
+        header_spans.push(Span::styled(
+            "Agent: ",
+            Style::default().fg(Color::DarkGray),
+        ));
+        header_spans.push(Span::styled(agent_name, Style::default().fg(Color::Cyan)));
+        header_spans.push(Span::raw("  "));
+    }
 
     // Add active time if available
     if active_time != "-" {
@@ -129,13 +86,6 @@ fn draw_header(f: &mut Frame, app: &App, area: Rect) {
         header_spans.push(Span::styled(active_time, Style::default().fg(Color::Cyan)));
         header_spans.push(Span::raw("  "));
     }
-
-    // Add cost
-    header_spans.push(Span::styled(
-        format!("${:.2}", cost),
-        Style::default().fg(Color::Yellow),
-    ));
-    header_spans.push(Span::raw("  "));
 
     // Add time filter
     header_spans.push(Span::styled(
@@ -272,8 +222,8 @@ fn draw_metrics_bar(f: &mut Frame, app: &App, area: Rect) {
             .iter()
             .take(3) // Show top 3 models max
             .map(|(name, count)| {
-                // Shorten model names (e.g., "claude-sonnet-4-20250514" -> "sonnet-4")
-                let short_name = shorten_model_name(name);
+                // Shorten model names using provider registry
+                let short_name = PROVIDER_REGISTRY.shorten_model_name(name);
                 format!("{} ({})", short_name, count)
             })
             .collect();
@@ -600,7 +550,7 @@ fn draw_mcp_table(f: &mut Frame, app: &App, area: Rect) {
 
 fn draw_footer(f: &mut Frame, area: Rect) {
     let footer = Line::from(vec![Span::styled(
-        " [q]uit [s]ort [p]ause [d]etail [t]ime [r]eset",
+        " [q]uit [s]ort [p]ause [d]etail [t]ime [r]eset [a]gent",
         Style::default().fg(Color::DarkGray),
     )]);
 

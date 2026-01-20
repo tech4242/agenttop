@@ -1,6 +1,7 @@
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 
+use crate::providers::PROVIDER_REGISTRY;
 use crate::storage::{ApiMetrics, SessionMetrics, StorageHandle, TokenMetrics, ToolMetrics};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -53,6 +54,10 @@ pub struct App {
     pub show_detail: bool,
     pub last_refresh: DateTime<Utc>,
     pub time_filter: TimeFilter,
+    /// Detected agents from OTLP data (e.g., ["claude_code", "gemini_cli"])
+    pub detected_agents: Vec<String>,
+    /// Currently selected agent index (for filtering display)
+    pub selected_agent_index: usize,
 }
 
 impl App {
@@ -70,6 +75,8 @@ impl App {
             show_detail: false,
             last_refresh: Utc::now(),
             time_filter: TimeFilter::default(),
+            detected_agents: Vec::new(),
+            selected_agent_index: 0,
         }
     }
 
@@ -83,6 +90,30 @@ impl App {
         self.session_metrics = self.storage.get_session_metrics(self.time_filter.since())?;
         self.api_metrics = self.storage.get_api_metrics(self.time_filter.since())?;
         self.last_refresh = Utc::now();
+
+        // Detect agents from tool usage and model names
+        // Collect agent IDs first to avoid borrow issues
+        let mut new_agents: Vec<&'static str> = Vec::new();
+
+        for tool in &self.tool_metrics {
+            if let Some(provider) = PROVIDER_REGISTRY.provider_for_tool(&tool.tool_name) {
+                new_agents.push(provider.id());
+            }
+        }
+
+        for model_name in self.api_metrics.models.keys() {
+            for provider in PROVIDER_REGISTRY.providers() {
+                if provider.shorten_model_name(model_name).is_some() {
+                    new_agents.push(provider.id());
+                    break;
+                }
+            }
+        }
+
+        // Now add all detected agents
+        for agent_id in new_agents {
+            self.add_detected_agent(agent_id);
+        }
 
         // Sort the tools
         self.sort_tools();
@@ -269,6 +300,28 @@ impl App {
             format!("{}ms", ms as u64)
         } else {
             format!("{:.1}s", ms / 1000.0)
+        }
+    }
+
+    /// Get the currently selected agent ID
+    pub fn current_agent(&self) -> Option<&str> {
+        self.detected_agents
+            .get(self.selected_agent_index)
+            .map(|s| s.as_str())
+    }
+
+    /// Cycle through detected agents
+    pub fn cycle_agent(&mut self) {
+        if !self.detected_agents.is_empty() {
+            self.selected_agent_index =
+                (self.selected_agent_index + 1) % self.detected_agents.len();
+        }
+    }
+
+    /// Add a detected agent if not already in the list
+    pub fn add_detected_agent(&mut self, agent_id: &str) {
+        if !self.detected_agents.contains(&agent_id.to_string()) {
+            self.detected_agents.push(agent_id.to_string());
         }
     }
 }

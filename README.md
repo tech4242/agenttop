@@ -27,19 +27,19 @@
 A terminal-native observability dashboard for AI coding agents. Real-time visibility into tool usage, token consumption, and productivity metrics.
 
 ```
-┌─ agenttop ──────────────────────────────────────────────────────── $4.23 ─┐
-│ Tokens  In: 89K  Out: 42K  Cache: 25K (94% reuse)  Session Total: 156K   │
-├──────────────────────────────────────────────────────────────────────────┤
-│ API: 47 calls │ 1.2s avg │ 2 errors │ Active: 1h 47m                     │
-├──────────────────────────────────────────────────────────────────────────┤
-│ TOOL         CALLS  ERR  APR%   AVG      RANGE        LAST   FREQ        │
-│ ▶ Read         89    0  100%    12ms    5ms-45ms      5s    ██████████░░ │
-│   Bash         47    1   98%   234ms    50ms-2.1s     2s    █████░░░░░░░ │
-│   Edit         34    2   94%    45ms   10ms-200ms    10s    ████░░░░░░░░ │
-├──────────────────────────────────────────────────────────────────────────┤
-│ MCP Tools                                                                │
-│   context7:*   15    1   93%   345ms  100ms-800ms    20s    ██████████░░ │
-└───── [q]uit [s]ort [p]ause [d]etail [t]ime [r]eset ──────────────────────┘
+┌─ agenttop ───────────────────────────── Agent: Claude Code  Active: 1h 47m ─┐
+│ Tokens  In: 89K  Out: 42K  Cache: 25K (94% reuse)  Session Total: 156K      │
+├─────────────────────────────────────────────────────────────────────────────┤
+│ API: 47 calls │ 1.2s avg │ 2 errors                                         │
+├─────────────────────────────────────────────────────────────────────────────┤
+│ TOOL         CALLS  ERR  APR%   AVG      RANGE        LAST   FREQ           │
+│ ▶ Read         89    0  100%    12ms    5ms-45ms      5s    ██████████░░    │
+│   Bash         47    1   98%   234ms    50ms-2.1s     2s    █████░░░░░░░    │
+│   Edit         34    2   94%    45ms   10ms-200ms    10s    ████░░░░░░░░    │
+├─────────────────────────────────────────────────────────────────────────────┤
+│ MCP Tools                                                                   │
+│   context7:*   15    1   93%   345ms  100ms-800ms    20s    ██████████░░    │
+└───── [q]uit [s]ort [p]ause [d]etail [t]ime [r]eset [a]gent ─────────────────┘
 ```
 
 ## Origin Story
@@ -61,14 +61,16 @@ If you want to contribute, please let me know!
 | **Claude Code** | ✅ Full | Metrics, Logs | Anonymized (`mcp_tool`) | tokens, cost, tools, LOC |
 | **OpenAI Codex CLI** | ✅ Partial | Logs, Traces | Full names | tokens, tools, prompts |
 | **Gemini CLI** | ✅ Full | Metrics, Logs | Full names + `tool_type` | 40+ metrics |
-| **Qwen Code** | ✅ Full | Metrics, Logs | Unknown | tokens, diff stats |
+| **Qwen Code** | ✅ Full | Metrics, Logs | N/A | tokens, diff stats |
 | **Cline** | ⚠️ Via provider | Logs, Metrics | N/A | events, errors |
+| **Mistral Vibe** | ❌ None | - | - | - |
 | **Cursor** | ❌ Proprietary | Admin API only | N/A | aggregate stats |
 | **GitHub Copilot** | ❌ Proprietary | REST API only | N/A | usage rates |
 | **Aider** | ❌ None | - | - | - |
 
 ## Features
 
+- **Multi-Agent Support** - Automatic detection of Claude Code, Gemini CLI, OpenAI Codex, and Qwen Code
 - **Token Tracking** - Input, output, and cache token metrics
 - **Tool Table** - Real-time tool call metrics with:
   - Call count and error count
@@ -78,15 +80,12 @@ If you want to contribute, please let me know!
 - **API Metrics** - API calls, latency, active time
 - **Productivity Metrics** - Lines of code, commits
 - **Cache Reuse Rate** - Prompt caching efficiency
-- **Session Cost** - Running cost estimate
 
 ## Installation
 
 ### Cargo
 
-```bash
-cargo install agenttop
-```
+Not published yet but you can run `cargo install --git https://github.com/tech4242/agenttop`
 
 ### Pre-built Binaries
 
@@ -121,12 +120,22 @@ sudo mv agenttop /usr/local/bin/
 ```bash
 # Just run it - auto-configures Claude Code if needed
 agenttop
+
+# Configure a specific provider
+agenttop --setup claude    # Configure Claude Code
+agenttop --setup gemini    # Configure Gemini CLI
+agenttop --setup qwen      # Configure Qwen Code
+agenttop --setup all       # Configure all JSON-based providers
+
+# Run in headless mode (no TUI, just OTLP receiver)
+agenttop --headless
 ```
 
 That's it! agenttop automatically:
 1. Enables Claude Code's OpenTelemetry export (if not already enabled)
 2. Starts an OTLP receiver on port 4318
 3. Shows real-time metrics in a terminal dashboard
+4. Detects which AI coding agent is active based on telemetry
 
 ## Keyboard Shortcuts
 
@@ -136,7 +145,9 @@ That's it! agenttop automatically:
 | `s` | Cycle sort column |
 | `p` | Pause/resume updates |
 | `d` / `Enter` | Show tool details |
+| `t` | Cycle time filter |
 | `r` | Reset statistics |
+| `a` | Cycle through detected agents |
 | `↑`/`k` | Select previous |
 | `↓`/`j` | Select next |
 | `Esc` | Close detail view |
@@ -192,6 +203,8 @@ in all Claude Code versions. APR% may show as 100% when data is unavailable.
 
 ## Configuration
 
+### Claude Code (Auto-configured)
+
 agenttop automatically configures Claude Code's `~/.claude/settings.json` with the required environment variables:
 
 ```json
@@ -210,6 +223,21 @@ agenttop automatically configures Claude Code's `~/.claude/settings.json` with t
 A backup is created at `~/.claude/settings.json.bak` before any modifications.
 
 **Note:** After agenttop configures your settings, restart Claude Code for the telemetry to take effect.
+
+### OpenAI Codex CLI (Manual Setup Required)
+
+OpenAI Codex uses TOML configuration. Add the following to `~/.codex/config.toml`:
+
+```toml
+[otel]
+exporter = "otlp-http"
+[otel.exporter.otlp-http]
+endpoint = "http://localhost:4318/v1/logs"
+```
+
+### Gemini CLI / Qwen Code (Auto-configured)
+
+Run `agenttop --setup gemini` or `agenttop --setup qwen` to auto-configure these providers.
 
 ## Data Storage
 

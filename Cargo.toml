@@ -33,6 +33,9 @@ opentelemetry-proto = { version = "0.29", features = ["gen-tonic-messages", "log
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
+# CLI
+clap = { version = "4", features = ["derive"] }
+
 # Utilities
 dirs = "6"
 chrono = { version = "0.4", features = ["serde"] }
