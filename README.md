@@ -68,6 +68,24 @@ If you want to contribute, please let me know!
 | **GitHub Copilot** | ❌ Proprietary | REST API only | N/A | usage rates |
 | **Aider** | ❌ None | - | - | - |
 
+### Some notes on Limitations
+
+#### MCP Tool Names (Claude Code)
+Claude Code anonymizes MCP tool names in telemetry for privacy (v2.1.2+).
+All MCP tools appear as `mcp_tool`. Other agents (Codex, Gemini) expose full names.
+
+There is an open issue already at: https://github.com/anthropics/claude-code/issues/17046 
+
+#### Context Window Usage
+Claude Code does NOT expose context window usage or compaction status in telemetry.
+The ~200K context window and ~75% compaction threshold are internal only.
+agenttop shows cumulative session tokens, not context window remaining.
+
+#### Approval Rate
+The `decision` attribute for tool approval tracking is not consistently present
+in all Claude Code versions. APR% may show as 100% when data is unavailable.
+
+
 ## Features
 
 - **Multi-Agent Support** - Automatic detection of Claude Code, Gemini CLI, OpenAI Codex, and Qwen Code
@@ -152,55 +170,6 @@ That's it! agenttop automatically:
 | `↓`/`j` | Select next |
 | `Esc` | Close detail view |
 
-## How It Works
-
-agenttop uses Claude Code's native OpenTelemetry support to collect metrics:
-
-```
-Claude Code                        agenttop
-    │                                  │
-    ├── OTEL metrics ─────────────────►│ HTTP OTLP Receiver
-    │   (port 4318)                    │     │
-    │                                  │     ▼
-    └── OTEL events ──────────────────►│ DuckDB (embedded)
-        (tool_result, api_request)     │     │
-                                       │     ▼
-                                       │ Ratatui TUI
-```
-
-### Metrics Collected
-
-| Metric | Description |
-|--------|-------------|
-| `claude_code.token.usage` | Input/output/cache tokens (by `type` attribute) |
-| `claude_code.cost.usage` | Session cost in USD |
-| `claude_code.active_time.total` | Active coding time in seconds |
-| `claude_code.lines_of_code.count` | Lines added/removed |
-| `claude_code.commit.count` | Git commits created |
-
-### Events Collected
-
-| Event | Description |
-|-------|-------------|
-| `tool_result` / `claude_code.tool_result` | Tool invocations with success/duration |
-| `api_request` | API calls with model, latency, token counts |
-| `api_error` | API errors with error type and message |
-
-## Limitations
-
-### MCP Tool Names (Claude Code)
-Claude Code anonymizes MCP tool names in telemetry for privacy (v2.1.2+).
-All MCP tools appear as `mcp_tool`. Other agents (Codex, Gemini) expose full names.
-
-### Context Window Usage
-Claude Code does NOT expose context window usage or compaction status in telemetry.
-The ~200K context window and ~75% compaction threshold are internal only.
-agenttop shows cumulative session tokens, not context window remaining.
-
-### Approval Rate
-The `decision` attribute for tool approval tracking is not consistently present
-in all Claude Code versions. APR% may show as 100% when data is unavailable.
-
 ## Configuration
 
 ### Claude Code (Auto-configured)
@@ -246,6 +215,40 @@ Metrics are stored in DuckDB at:
 - Linux: `~/.local/share/agenttop/metrics.duckdb`
 
 Data is automatically pruned after 7 days.
+
+## How It Works
+
+agenttop uses Claude Code's native OpenTelemetry support to collect metrics:
+
+```
+Claude Code                        agenttop
+    │                                  │
+    ├── OTEL metrics ─────────────────►│ HTTP OTLP Receiver
+    │   (port 4318)                    │     │
+    │                                  │     ▼
+    └── OTEL events ──────────────────►│ DuckDB (embedded)
+        (tool_result, api_request)     │     │
+                                       │     ▼
+                                       │ Ratatui TUI
+```
+
+### Metrics Collected
+
+| Metric | Description |
+|--------|-------------|
+| `claude_code.token.usage` | Input/output/cache tokens (by `type` attribute) |
+| `claude_code.cost.usage` | Session cost in USD |
+| `claude_code.active_time.total` | Active coding time in seconds |
+| `claude_code.lines_of_code.count` | Lines added/removed |
+| `claude_code.commit.count` | Git commits created |
+
+### Events Collected
+
+| Event | Description |
+|-------|-------------|
+| `tool_result` / `claude_code.tool_result` | Tool invocations with success/duration |
+| `api_request` | API calls with model, latency, token counts |
+| `api_error` | API errors with error type and message |
 
 ## Development
 
