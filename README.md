@@ -14,7 +14,7 @@
 
 [![CI](https://github.com/tech4242/agenttop/actions/workflows/ci.yml/badge.svg)](https://github.com/tech4242/agenttop/actions/workflows/ci.yml)
 [![codecov](https://codecov.io/gh/tech4242/agenttop/branch/main/graph/badge.svg)](https://codecov.io/gh/tech4242/agenttop)
-[![Rust](https://img.shields.io/badge/rust-1.70+-orange.svg)](https://www.rust-lang.org/)
+[![Rust](https://img.shields.io/badge/rust-1.85+-orange.svg)](https://www.rust-lang.org/)
 [![Ratatui](https://img.shields.io/badge/TUI-Ratatui-blue.svg)](https://ratatui.rs/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 

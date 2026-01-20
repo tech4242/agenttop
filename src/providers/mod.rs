@@ -30,6 +30,7 @@ pub trait Provider: Send + Sync {
     fn name(&self) -> &'static str;
 
     /// OTLP metric/event prefix for auto-detection (e.g., "claude_code")
+    #[allow(dead_code)]
     fn metric_prefix(&self) -> &'static str;
 
     /// Built-in tools specific to this agent
@@ -84,6 +85,7 @@ impl ProviderRegistry {
     }
 
     /// Detect provider from metric/event name prefix
+    #[allow(dead_code)]
     pub fn detect_from_metric(&self, metric_name: &str) -> Option<&dyn Provider> {
         self.providers
             .iter()

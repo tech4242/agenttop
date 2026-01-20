@@ -4,12 +4,16 @@ use std::path::PathBuf;
 
 const OTLP_ENDPOINT: &str = "http://localhost:4318";
 
+#[allow(dead_code)]
 pub fn claude_settings_path() -> Option<PathBuf> {
     dirs::home_dir().map(|home| home.join(".claude").join("settings.json"))
 }
 
 /// Ensures Claude Code OTEL is configured correctly using the env block format.
 /// This is the correct way to configure telemetry as of Claude Code 2025+.
+/// Note: This function is kept for backwards compatibility. New code should use
+/// the provider's ensure_configured() method instead.
+#[allow(dead_code)]
 pub fn ensure_otel_configured() -> Result<()> {
     let settings_path = claude_settings_path()
         .ok_or_else(|| anyhow::anyhow!("Could not determine home directory"))?;

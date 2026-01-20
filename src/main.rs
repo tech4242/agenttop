@@ -116,12 +116,12 @@ async fn main() -> Result<()> {
     }
 
     // Check and auto-configure Claude Code OTEL if needed (backwards compatibility)
-    if let Some(claude_provider) = PROVIDER_REGISTRY.get("claude_code") {
-        if let Err(e) = claude_provider.ensure_configured() {
-            eprintln!("Warning: Could not auto-configure Claude Code OTEL: {}", e);
-            eprintln!("Please manually enable OTEL in ~/.claude/settings.json");
-            eprintln!("Or run: agenttop --setup claude");
-        }
+    if let Some(claude_provider) = PROVIDER_REGISTRY.get("claude_code")
+        && let Err(e) = claude_provider.ensure_configured()
+    {
+        eprintln!("Warning: Could not auto-configure Claude Code OTEL: {}", e);
+        eprintln!("Please manually enable OTEL in ~/.claude/settings.json");
+        eprintln!("Or run: agenttop --setup claude");
     }
 
     // Initialize storage handle (spawns storage actor thread)
