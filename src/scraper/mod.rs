@@ -92,9 +92,13 @@ pub struct LiveSession {
     pub model: String,
     /// 0.0–1.0; `None` when the model is unrecognized or no tokens recorded yet.
     pub context_percent: Option<f64>,
-    /// Total context window in tokens (lookup table).
-    #[allow(dead_code)]
+    /// Total context window in tokens (lookup table, possibly auto-bumped to
+    /// 1M for opus when observed usage exceeds the 200k default).
     pub context_window: Option<u64>,
+    /// The most recent assistant turn's input + cache_read tokens — the
+    /// actual current occupancy of the context window. Surfaced alongside
+    /// `context_percent` so the UI can display "850k/1M" instead of just a %.
+    pub latest_context_tokens: u64,
     /// Last tool invocation in human-readable form (e.g. `"Edit src/main.rs"`).
     pub current_task: String,
     /// Cumulative input tokens for the session (read from transcript).
@@ -168,13 +172,23 @@ pub struct Scraper {
     /// PIDs that hold a port → (port, owning session id at time of discovery).
     /// Used to flag orphans when the owning session disappears.
     tracked_port_children: HashMap<u32, (u16, String, String)>,
-    /// Tick counter for slow-cycle scans (ports, git).
-    tick_count: u32,
+    /// Tick counter for heavy-refresh throttling (process tree, file scans).
+    heavy_tick_count: u32,
+    /// Tick counter for the slowest cycle (port scan).
+    slow_tick_count: u32,
     /// Cached port snapshot from the last slow tick.
     cached_ports: HashMap<u32, u16>,
+    /// Cached snapshot of everything that's expensive to compute. We replace
+    /// this on heavy ticks; cheap host metrics are overlaid every tick.
+    cached_snapshot: ScraperSnapshot,
 }
 
-const SLOW_TICK_EVERY: u32 = 50; // ~5s when refresh runs every 100ms
+// App.refresh() runs every ~100 ms. Heavy I/O (process tree, file reads,
+// transcript parsing) only happens every HEAVY_TICK_EVERY refreshes — once
+// per second — so the UI stays calm and CPU stays low. Host vitals are
+// cheap and refresh every tick.
+const HEAVY_TICK_EVERY: u32 = 10; // ~1 s
+const SLOW_TICK_EVERY: u32 = 100; // ~10 s (ports, etc.)
 
 impl Default for Scraper {
     fn default() -> Self {
@@ -189,17 +203,34 @@ impl Scraper {
             host_sampler: host::HostSampler::new(),
             transcript_offsets: HashMap::new(),
             tracked_port_children: HashMap::new(),
-            tick_count: SLOW_TICK_EVERY, // force a slow tick on first call
+            heavy_tick_count: HEAVY_TICK_EVERY, // force a heavy tick on first call
+            slow_tick_count: SLOW_TICK_EVERY,
             cached_ports: HashMap::new(),
+            cached_snapshot: ScraperSnapshot::default(),
         }
     }
 
     pub fn tick(&mut self) -> ScraperSnapshot {
-        let slow_tick = self.tick_count >= SLOW_TICK_EVERY;
-        if slow_tick {
-            self.tick_count = 0;
+        // Host vitals are cheap — sample every tick so CPU/MEM/load feel live.
+        let host_metrics = self.host_sampler.sample();
+
+        let heavy_tick = self.heavy_tick_count >= HEAVY_TICK_EVERY;
+        let slow_tick = self.slow_tick_count >= SLOW_TICK_EVERY;
+
+        if !heavy_tick {
+            self.heavy_tick_count += 1;
+            // Reuse the cached snapshot — only the host vitals are fresh.
+            let mut snap = self.cached_snapshot.clone();
+            snap.host_metrics = host_metrics;
+            return snap;
         }
-        self.tick_count += 1;
+
+        // We're doing the heavy work this tick.
+        self.heavy_tick_count = 0;
+        if slow_tick {
+            self.slow_tick_count = 0;
+        }
+        self.slow_tick_count += 1;
 
         // 1. Refresh process tree.
         self.sys.refresh();
@@ -236,15 +267,14 @@ impl Scraper {
         //    flag PIDs that still hold a port but whose owning session is gone.
         let orphan_ports = self.detect_orphan_ports(&live_sessions);
 
-        // 8. Host vitals.
-        let host_metrics = self.host_sampler.sample();
-
-        ScraperSnapshot {
+        let snap = ScraperSnapshot {
             live_sessions,
             orphan_ports,
             rate_limits,
             host_metrics,
-        }
+        };
+        self.cached_snapshot = snap.clone();
+        snap
     }
 
     fn detect_orphan_ports(&mut self, live_sessions: &[LiveSession]) -> Vec<OrphanPort> {

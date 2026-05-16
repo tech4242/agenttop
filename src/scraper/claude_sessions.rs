@@ -101,10 +101,24 @@ pub fn scan(
         // Sort children by RSS desc so the biggest is first.
         children.sort_by(|a, b| b.mem_kb.cmp(&a.mem_kb));
 
-        let context_window = summary
+        // Window detection: opus has both 200k and 1M variants, but the
+        // transcript's model id usually doesn't say which one (the 1M variant
+        // is selected via API beta header, not encoded in the name). If we
+        // observe usage > 200k, the session must be in 1M mode — auto-bump.
+        let mut context_window = summary
             .last_model
             .as_deref()
             .and_then(context_window_for);
+        if let Some(window) = context_window
+            && summary.latest_context_tokens > window
+            && summary
+                .last_model
+                .as_deref()
+                .map(|m| m.to_lowercase().contains("opus"))
+                .unwrap_or(false)
+        {
+            context_window = Some(1_000_000);
+        }
         let context_percent = context_window.and_then(|w| {
             if w == 0 || summary.latest_context_tokens == 0 {
                 None
@@ -124,6 +138,7 @@ pub fn scan(
             model: summary.last_model.unwrap_or_default(),
             context_percent,
             context_window,
+            latest_context_tokens: summary.latest_context_tokens,
             current_task: summary.current_task,
             input_tokens: summary.input_tokens,
             output_tokens: summary.output_tokens,

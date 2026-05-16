@@ -14,10 +14,13 @@ use crate::scraper::{HostMetrics, LiveSession, OrphanPort, RateLimitInfo, Sessio
 
 pub fn draw(f: &mut Frame, app: &App) {
     let has_mcp_tools = !app.mcp_tools().is_empty();
-    let live_panel_height = live_panel_height(app);
+    let total_height = f.area().height;
+    let live_panel_height = live_panel_height(app, total_height);
 
     // Build a layout that always has header + metrics + footer; everything
-    // between is optional.
+    // between is optional. We use Length for the live panel (so it gets its
+    // computed budget) and Min for the tools tables (so they always have at
+    // least a few rows visible even when there are many live sessions).
     let mut constraints: Vec<Constraint> = vec![
         Constraint::Length(3), // header
         Constraint::Length(3), // metrics bar
@@ -26,8 +29,8 @@ pub fn draw(f: &mut Frame, app: &App) {
         constraints.push(Constraint::Length(live_panel_height));
     }
     if has_mcp_tools {
-        constraints.push(Constraint::Ratio(1, 2)); // built-in tools
-        constraints.push(Constraint::Ratio(1, 2)); // MCP tools
+        constraints.push(Constraint::Min(6)); // built-in tools — guaranteed floor
+        constraints.push(Constraint::Min(5)); // MCP tools — guaranteed floor
     } else {
         constraints.push(Constraint::Min(8)); // built-in tools
     }
@@ -63,13 +66,11 @@ pub fn draw(f: &mut Frame, app: &App) {
 /// Height of the live-state panel (sessions + quotas + orphan ports). Returns
 /// 0 when there's nothing to show so we don't claim empty terminal space.
 ///
-/// IMPORTANT: capped at MAX_LIVE_PANEL_HEIGHT so we don't starve the
-/// tools / MCP tables below. The live panel scrolls or truncates internally
-/// when there are more sessions than fit — better than pushing the OTLP-side
-/// data off-screen.
-fn live_panel_height(app: &App) -> u16 {
-    const MAX_LIVE_PANEL_HEIGHT: u16 = 10;
-
+/// We try to fit *all* live sessions, but cap at half the terminal so the
+/// OTLP-side tools tables always have a reasonable amount of space. When
+/// there are more sessions than fit, the table truncates with the most
+/// recent first (sorted by `started_at` desc).
+fn live_panel_height(app: &App, total_height: u16) -> u16 {
     let s = &app.scraper_snapshot;
     let has_sessions = !s.live_sessions.is_empty();
     let has_rate_limits = !s.rate_limits.is_empty();
@@ -77,21 +78,18 @@ fn live_panel_height(app: &App) -> u16 {
     if !has_sessions && !has_rate_limits && !has_orphans {
         return 0;
     }
-    // One row per visible session (cap at 3 in the table; subagents fold
-    // into the same row as a comma-joined summary, so no extra row needed).
-    let visible_sessions = s.live_sessions.len().min(3) as u16;
+    let max_height = (total_height / 2).max(6);
+    let session_count = s.live_sessions.len() as u16;
     let sessions_height = if has_sessions {
-        visible_sessions.saturating_add(3) // top border + header + bottom border
+        session_count.saturating_add(3) // top border + header row + bottom border
     } else {
         0
     };
     let quota_height = if has_rate_limits { 3 } else { 0 };
     let orphans_height = if has_orphans { 3 } else { 0 };
 
-    // Layout puts quota + sessions on the same row split horizontally — so
-    // we take the max of session/quota for that row, plus orphans below.
     let main_row = sessions_height.max(quota_height);
-    (main_row + orphans_height).min(MAX_LIVE_PANEL_HEIGHT)
+    (main_row + orphans_height).min(max_height)
 }
 
 fn draw_header(f: &mut Frame, app: &App, area: Rect) {
@@ -431,7 +429,7 @@ fn draw_live_panel(f: &mut Frame, app: &App, area: Rect) {
 
 fn draw_live_sessions(f: &mut Frame, sessions: &[LiveSession], area: Rect) {
     let header_cells = [
-        "AGENT", "PROJECT", "STATUS", "MODEL", "CTX%", "TOKENS", "MEM", "TASK",
+        "AGENT", "PROJECT", "STATUS", "MODEL", "CTX", "TOKENS", "MEM", "TASK",
     ]
     .iter()
     .map(|h| {
@@ -444,11 +442,20 @@ fn draw_live_sessions(f: &mut Frame, sessions: &[LiveSession], area: Rect) {
     let header = Row::new(header_cells).height(1);
 
     let mut rows = Vec::new();
-    for session in sessions.iter().take(3) {
+    for session in sessions.iter() {
         let model_short = PROVIDER_REGISTRY.shorten_model_name(&session.model);
-        let ctx_str = match session.context_percent {
-            Some(p) => format!("{:.0}%", p * 100.0),
-            None => "—".to_string(),
+        // Format as "<used>/<window> <pct>%" so the raw number is visible
+        // alongside the ratio. e.g. "120k/200k 60%". This matters because
+        // the opus 200k-vs-1M variant isn't always identifiable from the
+        // transcript model name.
+        let ctx_str = match (session.context_percent, session.context_window) {
+            (Some(p), Some(w)) => format!(
+                "{}/{} {:.0}%",
+                humanize_u64(session.latest_context_tokens),
+                humanize_u64(w),
+                p * 100.0
+            ),
+            _ => "—".to_string(),
         };
         let ctx_color = match session.context_percent {
             Some(p) if p >= 0.9 => Color::Red,
@@ -499,7 +506,7 @@ fn draw_live_sessions(f: &mut Frame, sessions: &[LiveSession], area: Rect) {
             Constraint::Length(18), // PROJECT
             Constraint::Length(11), // STATUS
             Constraint::Length(10), // MODEL
-            Constraint::Length(5),  // CTX%
+            Constraint::Length(16), // CTX (used/window pct)
             Constraint::Length(8),  // TOKENS
             Constraint::Length(8),  // MEM
             Constraint::Min(20),    // TASK
