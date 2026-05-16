@@ -104,7 +104,13 @@ pub struct LiveSession {
     /// Cumulative input tokens for the session (read from transcript).
     pub input_tokens: u64,
     pub output_tokens: u64,
+    /// Cumulative cache replay across all turns. Not displayed today
+    /// because every turn replays the full cached context — summing
+    /// produces inflated multi-million numbers — but kept on the struct
+    /// so a future "Cache: X / Y" breakdown can surface it.
+    #[allow(dead_code)]
     pub cache_read_tokens: u64,
+    #[allow(dead_code)]
     pub cache_creation_tokens: u64,
     /// RSS of the owning process in MB.
     pub mem_mb: u64,

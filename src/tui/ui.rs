@@ -464,12 +464,13 @@ fn draw_live_sessions(
             Some(_) => Color::Green,
             None => Color::DarkGray,
         };
-        let tokens = humanize_u64(
-            session.input_tokens
-                + session.output_tokens
-                + session.cache_read_tokens
-                + session.cache_creation_tokens,
-        );
+        // Show input + output only. Including cache_read produces inflated
+        // numbers (every turn replays the full cached context — a 50-turn
+        // session can easily report 10M+ even though actual model work was
+        // <1M tokens). Billing-wise, cache reads cost ~10% of input, so
+        // omitting them gives a more honest "how much work has this
+        // session done" number.
+        let tokens = humanize_u64(session.input_tokens + session.output_tokens);
         let mem_str = format!("{} MB", session.mem_mb);
         // Inline subagent summary so we don't need a second row per session.
         let mut task = if session.current_task.is_empty() {
