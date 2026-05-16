@@ -67,6 +67,16 @@ pub enum SortColumn {
     LastCall,
     AvgDuration,
     Name,
+    /// Group built-in tools first, then MCP tools grouped by server name.
+    Type,
+}
+
+/// Which panel keyboard navigation (j/k, up/down) operates on. `Tab` cycles.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum FocusPanel {
+    #[default]
+    Tools,
+    Live,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -107,6 +117,11 @@ pub struct App {
     pub project_filter: ProjectFilter,
     /// Compaction stats from claude_code.compaction events
     pub compaction_stats: CompactionStats,
+    /// Which panel j/k navigates. Tab cycles. Auto-falls-back to Tools when
+    /// there are no live sessions to focus.
+    pub focus: FocusPanel,
+    /// Selected row in the live-sessions table.
+    pub live_selected_index: usize,
 }
 
 impl App {
@@ -133,6 +148,8 @@ impl App {
             detected_projects: Vec::new(),
             project_filter: ProjectFilter::default(),
             compaction_stats: CompactionStats::default(),
+            focus: FocusPanel::default(),
+            live_selected_index: 0,
         }
     }
 
@@ -255,9 +272,15 @@ impl App {
         // Sort the tools
         self.sort_tools();
 
-        // Ensure selected index is valid
+        // Ensure selected indices are valid for both panels.
         if !self.tool_metrics.is_empty() && self.selected_index >= self.tool_metrics.len() {
             self.selected_index = self.tool_metrics.len() - 1;
+        }
+        let live_len = self.scraper_snapshot.live_sessions.len();
+        if live_len > 0 && self.live_selected_index >= live_len {
+            self.live_selected_index = live_len - 1;
+        } else if live_len == 0 {
+            self.live_selected_index = 0;
         }
 
         Ok(())
@@ -310,15 +333,30 @@ impl App {
                     }
                 });
             }
+            SortColumn::Type => {
+                // Built-ins first (lexicographic by name), then MCP grouped
+                // by server name, then by tool name within each server.
+                self.tool_metrics.sort_by(|a, b| {
+                    let a_builtin = a.is_builtin();
+                    let b_builtin = b.is_builtin();
+                    a_builtin
+                        .cmp(&b_builtin)
+                        .reverse() // true (builtin) sorts first
+                        .then_with(|| a.display_name().cmp(&b.display_name()))
+                });
+            }
         }
     }
 
     pub fn toggle_sort(&mut self) {
+        // Type is appended at the end of the existing cycle so older tests
+        // that assumed Calls → LastCall → AvgDuration → Name still pass.
         self.sort_by = match self.sort_by {
             SortColumn::Calls => SortColumn::LastCall,
             SortColumn::LastCall => SortColumn::AvgDuration,
             SortColumn::AvgDuration => SortColumn::Name,
-            SortColumn::Name => SortColumn::Calls,
+            SortColumn::Name => SortColumn::Type,
+            SortColumn::Type => SortColumn::Calls,
         };
         self.sort_tools();
     }
@@ -336,19 +374,69 @@ impl App {
     }
 
     pub fn select_next(&mut self) {
-        if !self.tool_metrics.is_empty() {
-            self.selected_index = (self.selected_index + 1) % self.tool_metrics.len();
+        match self.effective_focus() {
+            FocusPanel::Tools => {
+                if !self.tool_metrics.is_empty() {
+                    self.selected_index = (self.selected_index + 1) % self.tool_metrics.len();
+                }
+            }
+            FocusPanel::Live => {
+                let len = self.scraper_snapshot.live_sessions.len();
+                if len > 0 {
+                    self.live_selected_index = (self.live_selected_index + 1) % len;
+                }
+            }
         }
     }
 
     pub fn select_previous(&mut self) {
-        if !self.tool_metrics.is_empty() {
-            self.selected_index = if self.selected_index == 0 {
-                self.tool_metrics.len() - 1
-            } else {
-                self.selected_index - 1
-            };
+        match self.effective_focus() {
+            FocusPanel::Tools => {
+                if !self.tool_metrics.is_empty() {
+                    self.selected_index = if self.selected_index == 0 {
+                        self.tool_metrics.len() - 1
+                    } else {
+                        self.selected_index - 1
+                    };
+                }
+            }
+            FocusPanel::Live => {
+                let len = self.scraper_snapshot.live_sessions.len();
+                if len > 0 {
+                    self.live_selected_index = if self.live_selected_index == 0 {
+                        len - 1
+                    } else {
+                        self.live_selected_index - 1
+                    };
+                }
+            }
         }
+    }
+
+    /// Cycle focus between Live and Tools, but auto-fallback to Tools when
+    /// there are no live sessions.
+    pub fn toggle_focus(&mut self) {
+        self.focus = match self.focus {
+            FocusPanel::Tools if !self.scraper_snapshot.live_sessions.is_empty() => FocusPanel::Live,
+            _ => FocusPanel::Tools,
+        };
+    }
+
+    /// Resolves the user's `focus` field against actual data presence — if
+    /// `focus = Live` but there are no sessions, fall back to Tools so
+    /// navigation keeps working.
+    pub fn effective_focus(&self) -> FocusPanel {
+        if self.focus == FocusPanel::Live && self.scraper_snapshot.live_sessions.is_empty() {
+            FocusPanel::Tools
+        } else {
+            self.focus
+        }
+    }
+
+    pub fn selected_live_session(&self) -> Option<&crate::scraper::LiveSession> {
+        self.scraper_snapshot
+            .live_sessions
+            .get(self.live_selected_index)
     }
 
     pub fn selected_tool(&self) -> Option<&ToolMetrics> {
@@ -380,6 +468,10 @@ impl App {
         (self.token_metrics.cache_read_tokens as f64 / total_input as f64) * 100.0
     }
 
+    /// Kept for the existing test suite; the unified TUI table now renders
+    /// builtin + MCP together with a TYPE column, so this isn't used by
+    /// production code.
+    #[allow(dead_code)]
     pub fn builtin_tools(&self) -> Vec<&ToolMetrics> {
         self.tool_metrics
             .iter()
@@ -387,6 +479,7 @@ impl App {
             .collect()
     }
 
+    #[allow(dead_code)]
     pub fn mcp_tools(&self) -> Vec<&ToolMetrics> {
         self.tool_metrics.iter().filter(|t| t.is_mcp()).collect()
     }

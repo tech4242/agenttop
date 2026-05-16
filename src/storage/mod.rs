@@ -75,6 +75,10 @@ impl ToolMetrics {
         PROVIDER_REGISTRY.is_any_builtin_tool(&self.tool_name)
     }
 
+    /// Convenience inverse of `is_builtin`. Currently only used by tests
+    /// (the unified tools table renders TYPE directly from `is_builtin`),
+    /// but kept as part of the public API.
+    #[allow(dead_code)]
     pub fn is_mcp(&self) -> bool {
         // Any tool not in the built-in list is considered MCP
         !self.is_builtin()

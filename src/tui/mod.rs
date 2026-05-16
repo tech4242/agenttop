@@ -61,6 +61,7 @@ async fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Resul
                 KeyCode::Char('t') => app.toggle_time_filter(),
                 KeyCode::Char('r') => app.cycle_project(),
                 KeyCode::Char('a') => app.cycle_agent(),
+                KeyCode::Tab => app.toggle_focus(),
                 KeyCode::Up | KeyCode::Char('k') => app.select_previous(),
                 KeyCode::Down | KeyCode::Char('j') => app.select_next(),
                 KeyCode::Enter => app.toggle_detail(),

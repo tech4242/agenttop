@@ -8,19 +8,15 @@ use ratatui::{
     widgets::{Block, Borders, Cell, Clear, Paragraph, Row, Sparkline, Table, TableState},
 };
 
-use super::app::{App, ProjectFilter};
+use super::app::{App, FocusPanel, ProjectFilter};
 use crate::providers::PROVIDER_REGISTRY;
 use crate::scraper::{HostMetrics, LiveSession, OrphanPort, RateLimitInfo, SessionStatus};
+use crate::storage::ToolMetrics;
 
 pub fn draw(f: &mut Frame, app: &App) {
-    let has_mcp_tools = !app.mcp_tools().is_empty();
     let total_height = f.area().height;
     let live_panel_height = live_panel_height(app, total_height);
 
-    // Build a layout that always has header + metrics + footer; everything
-    // between is optional. We use Length for the live panel (so it gets its
-    // computed budget) and Min for the tools tables (so they always have at
-    // least a few rows visible even when there are many live sessions).
     let mut constraints: Vec<Constraint> = vec![
         Constraint::Length(3), // header
         Constraint::Length(3), // metrics bar
@@ -28,12 +24,7 @@ pub fn draw(f: &mut Frame, app: &App) {
     if live_panel_height > 0 {
         constraints.push(Constraint::Length(live_panel_height));
     }
-    if has_mcp_tools {
-        constraints.push(Constraint::Min(6)); // built-in tools — guaranteed floor
-        constraints.push(Constraint::Min(5)); // MCP tools — guaranteed floor
-    } else {
-        constraints.push(Constraint::Min(8)); // built-in tools
-    }
+    constraints.push(Constraint::Min(8)); // unified tools table
     constraints.push(Constraint::Length(1)); // footer
 
     let chunks = Layout::default()
@@ -50,26 +41,21 @@ pub fn draw(f: &mut Frame, app: &App) {
         draw_live_panel(f, app, chunks[idx]);
         idx += 1;
     }
-    draw_builtin_tool_table(f, app, chunks[idx]);
+    draw_tools_table(f, app, chunks[idx]);
     idx += 1;
-    if has_mcp_tools {
-        draw_mcp_table(f, app, chunks[idx]);
-        idx += 1;
-    }
-    draw_footer(f, chunks[idx]);
+    draw_footer(f, app, chunks[idx]);
 
     if app.show_detail {
         draw_detail_popup(f, app);
     }
 }
 
-/// Height of the live-state panel (sessions + quotas + orphan ports). Returns
-/// 0 when there's nothing to show so we don't claim empty terminal space.
+/// Height of the live-state panel (sessions + detail strip + quotas +
+/// orphan ports). Returns 0 when there's nothing to show.
 ///
-/// We try to fit *all* live sessions, but cap at half the terminal so the
-/// OTLP-side tools tables always have a reasonable amount of space. When
-/// there are more sessions than fit, the table truncates with the most
-/// recent first (sorted by `started_at` desc).
+/// Tries to fit all live sessions, plus a detail strip beneath the table
+/// when a session is selected (showing children/subagents). Capped at ~60%
+/// of terminal so the tools table always has space.
 fn live_panel_height(app: &App, total_height: u16) -> u16 {
     let s = &app.scraper_snapshot;
     let has_sessions = !s.live_sessions.is_empty();
@@ -78,18 +64,21 @@ fn live_panel_height(app: &App, total_height: u16) -> u16 {
     if !has_sessions && !has_rate_limits && !has_orphans {
         return 0;
     }
-    let max_height = (total_height / 2).max(6);
+    let max_height = ((total_height as u32 * 6 / 10) as u16).max(8);
     let session_count = s.live_sessions.len() as u16;
     let sessions_height = if has_sessions {
         session_count.saturating_add(3) // top border + header row + bottom border
     } else {
         0
     };
+    // Detail strip: 4 lines (chrome + 2 lines of children/subagents) when a
+    // live session is selected and the panel is focused.
+    let detail_height = if has_sessions { 4 } else { 0 };
     let quota_height = if has_rate_limits { 3 } else { 0 };
     let orphans_height = if has_orphans { 3 } else { 0 };
 
     let main_row = sessions_height.max(quota_height);
-    (main_row + orphans_height).min(max_height)
+    (main_row + detail_height + orphans_height).min(max_height)
 }
 
 fn draw_header(f: &mut Frame, app: &App, area: Rect) {
@@ -383,24 +372,25 @@ fn draw_live_panel(f: &mut Frame, app: &App, area: Rect) {
     let has_sessions = !s.live_sessions.is_empty();
     let has_rate_limits = !s.rate_limits.is_empty();
     let has_orphans = !s.orphan_ports.is_empty();
+    let focused = app.effective_focus() == FocusPanel::Live;
 
-    // Vertical split: main row (sessions | quotas) and (optional) orphans
-    // strip below.
-    let vertical = if has_orphans {
-        Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Min(3), Constraint::Length(3)])
-            .split(area)
-    } else {
-        Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Min(3)])
-            .split(area)
-    };
+    // Vertical: main row (sessions | quotas), detail strip when a session
+    // is selected, and orphan strip if any.
+    let mut v_constraints: Vec<Constraint> = vec![Constraint::Min(3)];
+    if has_sessions {
+        v_constraints.push(Constraint::Length(4)); // detail strip
+    }
+    if has_orphans {
+        v_constraints.push(Constraint::Length(3));
+    }
+    let vertical = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints(v_constraints)
+        .split(area);
 
     let main_row = vertical[0];
 
-    // Horizontal split within main row.
+    // Horizontal: sessions on the left, quotas on the right.
     let horizontal = if has_sessions && has_rate_limits {
         Layout::default()
             .direction(Direction::Horizontal)
@@ -415,19 +405,30 @@ fn draw_live_panel(f: &mut Frame, app: &App, area: Rect) {
 
     let mut h_idx = 0;
     if has_sessions {
-        draw_live_sessions(f, &s.live_sessions, horizontal[h_idx]);
+        draw_live_sessions(f, app, &s.live_sessions, horizontal[h_idx], focused);
         h_idx += 1;
     }
     if has_rate_limits && h_idx < horizontal.len() {
         draw_quota_panel(f, &s.rate_limits, horizontal[h_idx]);
     }
 
-    if has_orphans && vertical.len() > 1 {
-        draw_orphan_ports(f, &s.orphan_ports, vertical[1]);
+    let mut v_idx = 1;
+    if has_sessions {
+        draw_session_detail(f, app, vertical[v_idx]);
+        v_idx += 1;
+    }
+    if has_orphans && v_idx < vertical.len() {
+        draw_orphan_ports(f, &s.orphan_ports, vertical[v_idx]);
     }
 }
 
-fn draw_live_sessions(f: &mut Frame, sessions: &[LiveSession], area: Rect) {
+fn draw_live_sessions(
+    f: &mut Frame,
+    app: &App,
+    sessions: &[LiveSession],
+    area: Rect,
+    focused: bool,
+) {
     let header_cells = [
         "AGENT", "PROJECT", "STATUS", "MODEL", "CTX", "TOKENS", "MEM", "TASK",
     ]
@@ -499,6 +500,13 @@ fn draw_live_sessions(f: &mut Frame, sessions: &[LiveSession], area: Rect) {
         ]));
     }
 
+    // Bright border when focused so the user knows which panel j/k navigates.
+    let border_color = if focused { Color::Green } else { Color::DarkGray };
+    let title = if focused {
+        " Live sessions  [j/k navigate · Tab → Tools] "
+    } else {
+        " Live sessions  [Tab to focus] "
+    };
     let table = Table::new(
         rows,
         [
@@ -516,11 +524,121 @@ fn draw_live_sessions(f: &mut Frame, sessions: &[LiveSession], area: Rect) {
     .block(
         Block::default()
             .borders(Borders::ALL)
-            .title(" Live sessions ")
-            .border_style(Style::default().fg(Color::Green)),
+            .title(title)
+            .border_style(Style::default().fg(border_color)),
+    )
+    .row_highlight_style(
+        Style::default()
+            .bg(Color::DarkGray)
+            .add_modifier(Modifier::BOLD),
     );
 
-    f.render_widget(table, area);
+    let mut state = TableState::default();
+    if focused && !sessions.is_empty() {
+        state.select(Some(app.live_selected_index));
+    }
+    f.render_stateful_widget(table, area, &mut state);
+}
+
+/// Detail strip beneath the live-sessions table. Shows children processes
+/// and subagents for the currently selected session.
+fn draw_session_detail(f: &mut Frame, app: &App, area: Rect) {
+    let Some(session) = app.selected_live_session() else {
+        let p = Paragraph::new(Line::from(Span::styled(
+            "  (no live session selected — press Tab then j/k)",
+            Style::default().fg(Color::DarkGray),
+        )))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(" Selected session detail ")
+                .border_style(Style::default().fg(Color::DarkGray)),
+        );
+        f.render_widget(p, area);
+        return;
+    };
+
+    // Children line: pid · cmd · mem · port
+    let children_line = if session.children.is_empty() {
+        Line::from(Span::styled(
+            "  children: (none)",
+            Style::default().fg(Color::DarkGray),
+        ))
+    } else {
+        let mut spans: Vec<Span<'static>> = vec![Span::styled(
+            "  children: ",
+            Style::default().fg(Color::DarkGray),
+        )];
+        for (i, c) in session.children.iter().take(6).enumerate() {
+            if i > 0 {
+                spans.push(Span::raw("  "));
+            }
+            spans.push(Span::styled(
+                format!("{}", c.pid),
+                Style::default().fg(Color::Cyan),
+            ));
+            spans.push(Span::raw(" "));
+            spans.push(Span::raw(c.command.clone()));
+            spans.push(Span::styled(
+                format!(" ({} MB)", c.mem_kb / 1024),
+                Style::default().fg(Color::DarkGray),
+            ));
+            if let Some(port) = c.port {
+                spans.push(Span::styled(
+                    format!(" :{}", port),
+                    Style::default().fg(Color::Magenta),
+                ));
+            }
+        }
+        if session.children.len() > 6 {
+            spans.push(Span::styled(
+                format!("  +{} more", session.children.len() - 6),
+                Style::default().fg(Color::DarkGray),
+            ));
+        }
+        Line::from(spans)
+    };
+
+    // Subagents line: name(tokens) [status]
+    let subagents_line = if session.subagents.is_empty() {
+        Line::from(Span::styled(
+            "  subagents: (none)",
+            Style::default().fg(Color::DarkGray),
+        ))
+    } else {
+        let mut spans: Vec<Span<'static>> = vec![Span::styled(
+            "  subagents: ",
+            Style::default().fg(Color::DarkGray),
+        )];
+        for (i, sa) in session.subagents.iter().take(8).enumerate() {
+            if i > 0 {
+                spans.push(Span::raw("  "));
+            }
+            spans.push(Span::raw(sa.name.clone()));
+            spans.push(Span::styled(
+                format!("({})", humanize_u64(sa.tokens)),
+                Style::default().fg(Color::Cyan),
+            ));
+            if !sa.status.is_empty() {
+                spans.push(Span::styled(
+                    format!(" [{}]", sa.status),
+                    Style::default().fg(Color::Yellow),
+                ));
+            }
+        }
+        Line::from(spans)
+    };
+
+    let p = Paragraph::new(vec![children_line, subagents_line]).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title(format!(
+                " Selected: {} · {} ",
+                session.project_name, session.session_id
+            ))
+            .border_style(Style::default().fg(Color::DarkGray)),
+    );
+    f.render_widget(p, area);
 }
 
 fn status_color(s: SessionStatus) -> Color {
@@ -641,9 +759,25 @@ fn capitalize(s: &str) -> String {
     }
 }
 
-fn draw_builtin_tool_table(f: &mut Frame, app: &App, area: Rect) {
+/// Compute a short type label for the TYPE column. Built-in tools show
+/// `"builtin"`; MCP tools show the server name (e.g. `"context7"`). Falls
+/// back to `"mcp"` when the tool isn't a built-in but doesn't match the
+/// canonical `mcp__server__tool` shape.
+fn tool_type_label(tool: &ToolMetrics) -> &'static str {
+    if tool.is_builtin() {
+        "builtin"
+    } else {
+        // We can't return a borrowed slice tied to `parse_mcp_tool_name`'s
+        // return because it owns its strings. Keep this static for now —
+        // the server name itself shows in the tool name column thanks to
+        // `display_name()` (e.g. "context7:resolve-library-id").
+        "mcp"
+    }
+}
+
+fn draw_tools_table(f: &mut Frame, app: &App, area: Rect) {
     let header_cells = [
-        "TOOL", "CALLS", "ERR", "APR%", "AVG", "RANGE", "LAST", "FREQ",
+        "TYPE", "TOOL", "CALLS", "ERR", "APR%", "AVG", "RANGE", "LAST", "FREQ",
     ]
     .iter()
     .map(|h| {
@@ -656,15 +790,13 @@ fn draw_builtin_tool_table(f: &mut Frame, app: &App, area: Rect) {
     let header = Row::new(header_cells).height(1);
 
     let now = Utc::now();
-    let builtin_tools = app.builtin_tools();
+    // Single unified list — built-in + MCP — with a TYPE column to
+    // distinguish them. Order is whatever sort_tools last produced.
+    let all_tools: Vec<&ToolMetrics> = app.tool_metrics.iter().collect();
 
-    let max_calls = builtin_tools
-        .iter()
-        .map(|t| t.call_count)
-        .max()
-        .unwrap_or(1);
+    let max_calls = all_tools.iter().map(|t| t.call_count).max().unwrap_or(1);
 
-    let rows: Vec<Row> = builtin_tools
+    let rows: Vec<Row> = all_tools
         .iter()
         .enumerate()
         .map(|(i, tool)| {
@@ -745,185 +877,93 @@ fn draw_builtin_tool_table(f: &mut Frame, app: &App, area: Rect) {
                 Style::default().fg(Color::Red)
             };
 
+            // For MCP tools, show "server:tool" in the TOOL column via
+            // display_name(). The TYPE cell distinguishes builtin vs mcp.
+            let display = tool.display_name();
+            let type_label = tool_type_label(tool);
+            let type_style = if tool.is_builtin() {
+                Style::default().fg(Color::Cyan)
+            } else {
+                Style::default().fg(Color::Magenta)
+            };
+            let freq_style = if tool.is_builtin() {
+                Style::default().fg(Color::Cyan)
+            } else {
+                Style::default().fg(Color::Magenta)
+            };
+
             Row::new(vec![
-                Cell::from(format!("{}{}", indicator, tool.tool_name)),
+                Cell::from(type_label).style(type_style),
+                Cell::from(format!("{}{}", indicator, display)),
                 Cell::from(tool.call_count.to_string()),
                 Cell::from(tool.error_count.to_string()).style(error_style),
                 Cell::from(apr_str).style(apr_style),
                 Cell::from(avg_str),
                 Cell::from(range_str),
                 Cell::from(last_str),
-                Cell::from(freq_bar).style(Style::default().fg(Color::Cyan)),
+                Cell::from(freq_bar).style(freq_style),
             ])
             .style(style)
         })
         .collect();
 
+    let focused = app.effective_focus() == FocusPanel::Tools;
+    let border_color = if focused { Color::Cyan } else { Color::DarkGray };
+    let title = if focused {
+        format!(
+            " Tools ({})  [s sort · d detail · Tab → Live] ",
+            app.tool_metrics.len()
+        )
+    } else {
+        format!(" Tools ({})  [Tab to focus] ", app.tool_metrics.len())
+    };
+
     let table = Table::new(
         rows,
         [
-            Constraint::Min(14),
-            Constraint::Length(6),
-            Constraint::Length(4),
-            Constraint::Length(5),
-            Constraint::Length(7),
-            Constraint::Length(12),
-            Constraint::Length(5),
-            Constraint::Length(10),
+            Constraint::Length(8),  // TYPE
+            Constraint::Min(20),    // TOOL
+            Constraint::Length(6),  // CALLS
+            Constraint::Length(4),  // ERR
+            Constraint::Length(5),  // APR%
+            Constraint::Length(7),  // AVG
+            Constraint::Length(12), // RANGE
+            Constraint::Length(5),  // LAST
+            Constraint::Length(10), // FREQ
         ],
     )
     .header(header)
     .block(
         Block::default()
             .borders(Borders::ALL)
-            .title(" Tools ")
-            .border_style(Style::default().fg(Color::Cyan)),
+            .title(title)
+            .border_style(Style::default().fg(border_color)),
     )
     .row_highlight_style(Style::default().add_modifier(Modifier::REVERSED));
 
     let mut state = TableState::default();
-    state.select(Some(app.selected_index));
+    if focused {
+        state.select(Some(app.selected_index));
+    }
 
     f.render_stateful_widget(table, area, &mut state);
 }
 
-fn draw_mcp_table(f: &mut Frame, app: &App, area: Rect) {
-    let mcp_tools = app.mcp_tools();
-
-    if mcp_tools.is_empty() {
-        return;
-    }
-
-    let header_cells = [
-        "TOOL", "CALLS", "ERR", "APR%", "AVG", "RANGE", "LAST", "FREQ",
-    ]
-    .iter()
-    .map(|h| {
-        Cell::from(*h).style(
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD),
-        )
-    });
-    let header = Row::new(header_cells).height(1);
-
-    let now = Utc::now();
-    let max_calls = mcp_tools.iter().map(|t| t.call_count).max().unwrap_or(1);
-
-    let rows: Vec<Row> = mcp_tools
-        .iter()
-        .map(|tool| {
-            let last_str = match tool.last_call {
-                Some(last) => {
-                    let diff = now - last;
-                    let secs = diff.num_seconds();
-                    if secs < 0 {
-                        "-".to_string()
-                    } else if secs < 60 {
-                        format!("{}s", secs)
-                    } else if secs < 3600 {
-                        format!("{}m", secs / 60)
-                    } else if secs < 86400 {
-                        format!("{}h", secs / 3600)
-                    } else {
-                        format!("{}d", secs / 86400)
-                    }
-                }
-                None => "-".to_string(),
-            };
-
-            let avg_str = if tool.avg_duration_ms < 1000.0 {
-                format!("{}ms", tool.avg_duration_ms as u64)
-            } else {
-                format!("{:.1}s", tool.avg_duration_ms / 1000.0)
-            };
-
-            let format_duration = |ms: f64| -> String {
-                if ms < 1000.0 {
-                    format!("{}ms", ms as u64)
-                } else {
-                    format!("{:.1}s", ms / 1000.0)
-                }
-            };
-            let range_str = format!(
-                "{}-{}",
-                format_duration(tool.min_duration_ms),
-                format_duration(tool.max_duration_ms)
-            );
-
-            let bar_width = 10;
-            let filled = ((tool.call_count as f64 / max_calls as f64) * bar_width as f64) as usize;
-            let empty = bar_width - filled;
-            let freq_bar = format!("{}{}", "█".repeat(filled), "░".repeat(empty));
-
-            let indicator = if tool
-                .last_call
-                .map(|l| (now - l).num_seconds() < 2)
-                .unwrap_or(false)
-            {
-                "▶ "
-            } else {
-                "  "
-            };
-
-            let error_style = if tool.error_count > 0 {
-                Style::default().fg(Color::Red)
-            } else {
-                Style::default().fg(Color::Green)
-            };
-
-            let approval_rate = tool.approval_rate();
-            let apr_str = format!("{:.0}%", approval_rate);
-            let apr_style = if approval_rate >= 95.0 {
-                Style::default().fg(Color::Green)
-            } else if approval_rate >= 80.0 {
-                Style::default().fg(Color::Yellow)
-            } else {
-                Style::default().fg(Color::Red)
-            };
-
-            Row::new(vec![
-                Cell::from(format!("{}{}", indicator, tool.display_name())),
-                Cell::from(tool.call_count.to_string()),
-                Cell::from(tool.error_count.to_string()).style(error_style),
-                Cell::from(apr_str).style(apr_style),
-                Cell::from(avg_str),
-                Cell::from(range_str),
-                Cell::from(last_str),
-                Cell::from(freq_bar).style(Style::default().fg(Color::Magenta)),
-            ])
-        })
-        .collect();
-
-    let table = Table::new(
-        rows,
-        [
-            Constraint::Min(14),
-            Constraint::Length(6),
-            Constraint::Length(4),
-            Constraint::Length(5),
-            Constraint::Length(7),
-            Constraint::Length(12),
-            Constraint::Length(5),
-            Constraint::Length(10),
-        ],
-    )
-    .header(header)
-    .block(
-        Block::default()
-            .borders(Borders::ALL)
-            .title(" MCP Tools ")
-            .border_style(Style::default().fg(Color::Magenta)),
-    );
-
-    f.render_widget(table, area);
-}
-
-fn draw_footer(f: &mut Frame, area: Rect) {
-    let footer = Line::from(vec![Span::styled(
-        " [q]uit [s]ort [p]ause [d]etail [t]ime [r] project [a]gent",
-        Style::default().fg(Color::DarkGray),
-    )]);
+fn draw_footer(f: &mut Frame, app: &App, area: Rect) {
+    let focus_hint = match app.effective_focus() {
+        FocusPanel::Tools => "Tools",
+        FocusPanel::Live => "Live",
+    };
+    let footer = Line::from(vec![
+        Span::styled(
+            " [q]uit [s]ort [p]ause [d]etail [t]ime [r] project [a]gent [Tab] focus ",
+            Style::default().fg(Color::DarkGray),
+        ),
+        Span::styled(
+            format!("· focus: {}", focus_hint),
+            Style::default().fg(Color::Cyan),
+        ),
+    ]);
 
     let paragraph = Paragraph::new(footer);
     f.render_widget(paragraph, area);
