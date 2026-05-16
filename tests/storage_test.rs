@@ -511,6 +511,75 @@ fn test_token_usage_recording() {
     assert_eq!(metrics.cache_creation_tokens, 100);
 }
 
+/// Verify get_token_rate_series returns a series whose totals match the
+/// underlying token_usage rows. This is the regression test for the
+/// silent-fail caused by binding a String to a TIMESTAMP `?` placeholder.
+#[test]
+fn test_token_rate_series_returns_recent_data() {
+    use agenttop::storage::StorageHandle;
+
+    let storage = StorageHandle::new_in_memory().unwrap();
+    storage.record_token_usage("input", 500);
+    storage.record_token_usage("output", 250);
+    storage.record_token_usage("input", 300);
+
+    // Let the actor flush.
+    std::thread::sleep(std::time::Duration::from_millis(150));
+
+    // 60-second window, 12 buckets (5s each).
+    let series = storage.get_token_rate_series(60, 12).unwrap();
+    assert_eq!(series.len(), 12, "must return exactly `points` buckets");
+
+    // All three inserts happened within the last few hundred ms — they
+    // should land in the final bucket (or close to it). Sum of the series
+    // multiplied by bucket width must equal the total recorded tokens.
+    let bucket_secs = 60.0 / 12.0;
+    let total_tokens: f64 = series.iter().map(|rate| rate * bucket_secs).sum();
+    assert!(
+        (total_tokens - 1050.0).abs() < 0.5,
+        "expected ~1050 total tokens across all buckets, got {}",
+        total_tokens
+    );
+}
+
+#[test]
+fn test_token_rate_series_empty_when_no_data() {
+    use agenttop::storage::StorageHandle;
+
+    let storage = StorageHandle::new_in_memory().unwrap();
+    let series = storage.get_token_rate_series(60, 12).unwrap();
+    assert_eq!(series.len(), 12);
+    assert!(series.iter().all(|&v| v == 0.0));
+}
+
+/// Regression: the time-filtered `get_token_metrics(Some(dt))` path was
+/// untested before — the TUI defaults to AllTime (since=None) so the WHERE
+/// clause was never exercised against a real timestamp comparison.
+#[test]
+fn test_token_metrics_with_time_filter_returns_recent_data() {
+    use agenttop::storage::StorageHandle;
+    use chrono::Duration;
+
+    let storage = StorageHandle::new_in_memory().unwrap();
+    storage.record_token_usage("input", 999);
+    std::thread::sleep(std::time::Duration::from_millis(200));
+
+    let since = Utc::now() - Duration::seconds(60);
+    let metrics = storage.get_token_metrics(Some(since)).unwrap();
+    assert_eq!(metrics.input_tokens, 999, "time-filtered query lost the row");
+}
+
+#[test]
+fn test_token_rate_series_handles_zero_inputs() {
+    use agenttop::storage::StorageHandle;
+
+    let storage = StorageHandle::new_in_memory().unwrap();
+    // points = 0 → empty Vec (no buckets, no division-by-zero).
+    assert!(storage.get_token_rate_series(60, 0).unwrap().is_empty());
+    // window_secs = 0 → empty Vec.
+    assert!(storage.get_token_rate_series(0, 10).unwrap().is_empty());
+}
+
 /// Test recording cost
 #[test]
 fn test_cost_recording() {

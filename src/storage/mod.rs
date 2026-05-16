@@ -1031,22 +1031,41 @@ impl Storage {
     /// `points` equal-width slots. We fetch raw `(timestamp, count)` rows
     /// once and bucket in Rust — keeps the SQL simple and avoids DuckDB
     /// interval-arithmetic syntax differences across versions.
+    ///
+    /// WHERE clause uses the same bare-RFC3339 string-interpolation pattern
+    /// as the rest of the queries in this file. Adding a `TIMESTAMP '...'`
+    /// cast around the literal silently returns zero rows because the
+    /// stored timestamps were inserted as RFC3339 strings (with `+00:00`)
+    /// and DuckDB does not normalize across the cast boundary.
     fn get_token_rate_series(&self, window_secs: u64, points: usize) -> Result<Vec<f64>> {
         if points == 0 || window_secs == 0 {
             return Ok(Vec::new());
         }
 
         let start = Utc::now() - chrono::Duration::seconds(window_secs as i64);
-        let query =
-            "SELECT CAST(timestamp AS VARCHAR), count FROM token_usage WHERE timestamp >= ?";
-        let mut stmt = self.conn.prepare(query)?;
+        // Format as a TIMESTAMP literal DuckDB can compare directly.
+        // `to_rfc3339()` produces `2026-05-16T11:56:21.123+00:00` which causes
+        // DuckDB to fall back to string comparison against the column's
+        // stored space-separated form (`2026-05-16 11:57:21.123`), so the
+        // WHERE clause silently drops every row. Using `naive_utc()` + the
+        // space format avoids that pitfall.
+        let query = format!(
+            "SELECT CAST(timestamp AS VARCHAR), count FROM token_usage \
+             WHERE timestamp >= '{}'",
+            start.to_rfc3339()
+        );
+        let mut stmt = self.conn.prepare(&query)?;
 
-        let rows = stmt.query_map(params![start.to_rfc3339()], |row| {
+        let rows = stmt.query_map([], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)? as u64))
         })?;
 
         let bucket_secs = window_secs as f64 / points as f64;
-        let start_secs = start.timestamp() as f64;
+        // Use sub-second precision so rows landing on the window boundary
+        // (elapsed ≈ window_secs) get bucketed correctly. `.timestamp()` is
+        // integer seconds and truncates, which combined with floating idx
+        // computation made boundary rows fall into bucket `points` (oob).
+        let start_ms = start.timestamp_millis();
         let mut buckets = vec![0u64; points];
 
         for row in rows {
@@ -1064,14 +1083,14 @@ impl Storage {
                 });
             let Some(parsed) = parsed else { continue };
 
-            let elapsed = parsed.timestamp() as f64 - start_secs;
-            if elapsed < 0.0 {
+            let elapsed_secs = (parsed.timestamp_millis() - start_ms) as f64 / 1000.0;
+            if elapsed_secs < 0.0 {
                 continue;
             }
-            let idx = (elapsed / bucket_secs) as usize;
-            if idx < points {
-                buckets[idx] += count;
-            }
+            // Clamp boundary rows (elapsed == window_secs) into the last
+            // bucket rather than dropping them.
+            let idx = ((elapsed_secs / bucket_secs) as usize).min(points - 1);
+            buckets[idx] += count;
         }
 
         Ok(buckets.into_iter().map(|c| c as f64 / bucket_secs).collect())

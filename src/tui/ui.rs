@@ -62,7 +62,14 @@ pub fn draw(f: &mut Frame, app: &App) {
 
 /// Height of the live-state panel (sessions + quotas + orphan ports). Returns
 /// 0 when there's nothing to show so we don't claim empty terminal space.
+///
+/// IMPORTANT: capped at MAX_LIVE_PANEL_HEIGHT so we don't starve the
+/// tools / MCP tables below. The live panel scrolls or truncates internally
+/// when there are more sessions than fit — better than pushing the OTLP-side
+/// data off-screen.
 fn live_panel_height(app: &App) -> u16 {
+    const MAX_LIVE_PANEL_HEIGHT: u16 = 10;
+
     let s = &app.scraper_snapshot;
     let has_sessions = !s.live_sessions.is_empty();
     let has_rate_limits = !s.rate_limits.is_empty();
@@ -70,16 +77,11 @@ fn live_panel_height(app: &App) -> u16 {
     if !has_sessions && !has_rate_limits && !has_orphans {
         return 0;
     }
-    // Sessions table: 2 rows of chrome (border + header) + 1 per session +
-    // 1 per session for subagents row if present.
-    let session_rows: u16 = s
-        .live_sessions
-        .iter()
-        .take(6)
-        .map(|s| if s.subagents.is_empty() { 1 } else { 2 })
-        .sum();
+    // One row per visible session (cap at 3 in the table; subagents fold
+    // into the same row as a comma-joined summary, so no extra row needed).
+    let visible_sessions = s.live_sessions.len().min(3) as u16;
     let sessions_height = if has_sessions {
-        session_rows.saturating_add(3)
+        visible_sessions.saturating_add(3) // top border + header + bottom border
     } else {
         0
     };
@@ -89,7 +91,7 @@ fn live_panel_height(app: &App) -> u16 {
     // Layout puts quota + sessions on the same row split horizontally — so
     // we take the max of session/quota for that row, plus orphans below.
     let main_row = sessions_height.max(quota_height);
-    main_row + orphans_height
+    (main_row + orphans_height).min(MAX_LIVE_PANEL_HEIGHT)
 }
 
 fn draw_header(f: &mut Frame, app: &App, area: Rect) {
@@ -442,7 +444,7 @@ fn draw_live_sessions(f: &mut Frame, sessions: &[LiveSession], area: Rect) {
     let header = Row::new(header_cells).height(1);
 
     let mut rows = Vec::new();
-    for session in sessions.iter().take(6) {
+    for session in sessions.iter().take(3) {
         let model_short = PROVIDER_REGISTRY.shorten_model_name(&session.model);
         let ctx_str = match session.context_percent {
             Some(p) => format!("{:.0}%", p * 100.0),
@@ -461,11 +463,21 @@ fn draw_live_sessions(f: &mut Frame, sessions: &[LiveSession], area: Rect) {
                 + session.cache_creation_tokens,
         );
         let mem_str = format!("{} MB", session.mem_mb);
-        let task = if session.current_task.is_empty() {
+        // Inline subagent summary so we don't need a second row per session.
+        let mut task = if session.current_task.is_empty() {
             "—".to_string()
         } else {
             session.current_task.clone()
         };
+        if !session.subagents.is_empty() {
+            let labels: Vec<String> = session
+                .subagents
+                .iter()
+                .take(3)
+                .map(|sa| format!("{}({})", sa.name, humanize_u64(sa.tokens)))
+                .collect();
+            task = format!("{}  · sub: {}", task, labels.join(", "));
+        }
 
         let status_color = status_color(session.status);
         rows.push(Row::new(vec![
@@ -478,33 +490,6 @@ fn draw_live_sessions(f: &mut Frame, sessions: &[LiveSession], area: Rect) {
             Cell::from(mem_str),
             Cell::from(task),
         ]));
-
-        if !session.subagents.is_empty() {
-            let labels: Vec<String> = session
-                .subagents
-                .iter()
-                .take(4)
-                .map(|sa| {
-                    let status = if sa.status.is_empty() {
-                        "".to_string()
-                    } else {
-                        format!(" [{}]", sa.status)
-                    };
-                    format!("{}{} {}", sa.name, status, humanize_u64(sa.tokens))
-                })
-                .collect();
-            let detail = format!("  └─ subagents: {}", labels.join(", "));
-            rows.push(Row::new(vec![
-                Cell::from(""),
-                Cell::from(""),
-                Cell::from(""),
-                Cell::from(""),
-                Cell::from(""),
-                Cell::from(""),
-                Cell::from(""),
-                Cell::from(detail).style(Style::default().fg(Color::DarkGray)),
-            ]));
-        }
     }
 
     let table = Table::new(
