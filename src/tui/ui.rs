@@ -174,10 +174,16 @@ fn format_host_strip(host: &HostMetrics) -> Vec<Span<'static>> {
     let mem_color = pct_color(host.mem_pct);
     vec![
         Span::styled("CPU ", Style::default().fg(Color::DarkGray)),
-        Span::styled(format!("{:.0}%", host.cpu_pct), Style::default().fg(cpu_color)),
+        Span::styled(
+            format!("{:.0}%", host.cpu_pct),
+            Style::default().fg(cpu_color),
+        ),
         Span::raw(" "),
         Span::styled("MEM ", Style::default().fg(Color::DarkGray)),
-        Span::styled(format!("{:.0}%", host.mem_pct), Style::default().fg(mem_color)),
+        Span::styled(
+            format!("{:.0}%", host.mem_pct),
+            Style::default().fg(mem_color),
+        ),
         Span::raw(" "),
         Span::styled("LOAD ", Style::default().fg(Color::DarkGray)),
         Span::styled(
@@ -502,7 +508,11 @@ fn draw_live_sessions(
     }
 
     // Bright border when focused so the user knows which panel j/k navigates.
-    let border_color = if focused { Color::Green } else { Color::DarkGray };
+    let border_color = if focused {
+        Color::Green
+    } else {
+        Color::DarkGray
+    };
     let title = if focused {
         " Live sessions  [j/k navigate · Tab → Tools] "
     } else {
@@ -909,7 +919,11 @@ fn draw_tools_table(f: &mut Frame, app: &App, area: Rect) {
         .collect();
 
     let focused = app.effective_focus() == FocusPanel::Tools;
-    let border_color = if focused { Color::Cyan } else { Color::DarkGray };
+    let border_color = if focused {
+        Color::Cyan
+    } else {
+        Color::DarkGray
+    };
     let title = if focused {
         format!(
             " Tools ({})  [s sort · d detail · Tab → Live] ",

@@ -107,9 +107,9 @@ fn run_setup(provider_name: &str) -> Result<()> {
             // since OTLP is the primary path.
             if provider_id == "claude_code" {
                 match crate::config::install_statusline_hook() {
-                    Ok(true) => println!(
-                        "  Installed agenttop StatusLine hook (rate-limit capture)"
-                    ),
+                    Ok(true) => {
+                        println!("  Installed agenttop StatusLine hook (rate-limit capture)")
+                    }
                     Ok(false) => {}
                     Err(e) => eprintln!("  Could not install StatusLine hook: {}", e),
                 }

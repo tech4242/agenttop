@@ -67,8 +67,7 @@ impl Provider for CopilotChatProvider {
         let mut settings: serde_json::Value = serde_json::from_str(&content)
             .context("Failed to parse VSCode settings.json (may contain trailing commas; edit manually if so)")?;
 
-        let needs_update = settings
-            .get("github.copilot.chat.otel.enabled")
+        let needs_update = settings.get("github.copilot.chat.otel.enabled")
             != Some(&serde_json::Value::Bool(true))
             || settings
                 .get("github.copilot.chat.otel.otlpEndpoint")

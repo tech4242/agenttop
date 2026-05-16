@@ -105,10 +105,7 @@ pub fn scan(
         // transcript's model id usually doesn't say which one (the 1M variant
         // is selected via API beta header, not encoded in the name). If we
         // observe usage > 200k, the session must be in 1M mode — auto-bump.
-        let mut context_window = summary
-            .last_model
-            .as_deref()
-            .and_then(context_window_for);
+        let mut context_window = summary.last_model.as_deref().and_then(context_window_for);
         if let Some(window) = context_window
             && summary.latest_context_tokens > window
             && summary
@@ -254,7 +251,9 @@ pub(crate) fn parse_transcript(
                 let message = value.get("message");
 
                 // Model name (latest wins).
-                if let Some(model) = message.and_then(|m| m.get("model")).and_then(|v| v.as_str())
+                if let Some(model) = message
+                    .and_then(|m| m.get("model"))
+                    .and_then(|v| v.as_str())
                 {
                     summary.last_model = Some(model.to_string());
                 }
@@ -325,8 +324,7 @@ pub(crate) fn parse_transcript(
                 {
                     for block in blocks {
                         if block.get("type").and_then(|v| v.as_str()) == Some("tool_result")
-                            && let Some(id) =
-                                block.get("tool_use_id").and_then(|v| v.as_str())
+                            && let Some(id) = block.get("tool_use_id").and_then(|v| v.as_str())
                         {
                             pending_tool_ids.remove(id);
                         }
@@ -455,11 +453,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let path = dir.path().join("t.jsonl");
         let mut f = fs::File::create(&path).unwrap();
-        writeln!(
-            f,
-            r#"{{"type":"user","message":{{"content":"hi"}}}}"#
-        )
-        .unwrap();
+        writeln!(f, r#"{{"type":"user","message":{{"content":"hi"}}}}"#).unwrap();
         writeln!(
             f,
             r#"{{"type":"assistant","message":{{"model":"claude-opus-4-5","usage":{{"input_tokens":100,"output_tokens":50,"cache_read_input_tokens":200,"cache_creation_input_tokens":10}},"content":[{{"type":"text","text":"ok"}}]}}}}"#
@@ -483,7 +477,10 @@ mod tests {
         assert_eq!(s.last_model.as_deref(), Some("claude-opus-4-5"));
         assert_eq!(s.current_task, "Edit src/main.rs");
         assert_eq!(s.last_line_kind, LastLineKind::AssistantWithPendingTool);
-        assert_eq!(offsets.get(&path).copied(), Some(fs::metadata(&path).unwrap().len()));
+        assert_eq!(
+            offsets.get(&path).copied(),
+            Some(fs::metadata(&path).unwrap().len())
+        );
     }
 
     #[test]

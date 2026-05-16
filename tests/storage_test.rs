@@ -566,7 +566,10 @@ fn test_token_metrics_with_time_filter_returns_recent_data() {
 
     let since = Utc::now() - Duration::seconds(60);
     let metrics = storage.get_token_metrics(Some(since)).unwrap();
-    assert_eq!(metrics.input_tokens, 999, "time-filtered query lost the row");
+    assert_eq!(
+        metrics.input_tokens, 999,
+        "time-filtered query lost the row"
+    );
 }
 
 #[test]

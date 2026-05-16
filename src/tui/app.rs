@@ -188,15 +188,20 @@ impl App {
                 .map(|p| p.name.clone())
                 .unwrap_or_else(|| {
                     // Fallback: use first 8 chars of session ID
-                    format!("session:{}", &session.session_id[..8.min(session.session_id.len())])
+                    format!(
+                        "session:{}",
+                        &session.session_id[..8.min(session.session_id.len())]
+                    )
                 });
 
-            let entry = project_aggregates.entry(project_name.clone()).or_insert(ProjectInfo {
-                name: project_name,
-                event_count: 0,
-                first_seen: session.first_seen,
-                last_seen: session.last_seen,
-            });
+            let entry = project_aggregates
+                .entry(project_name.clone())
+                .or_insert(ProjectInfo {
+                    name: project_name,
+                    event_count: 0,
+                    first_seen: session.first_seen,
+                    last_seen: session.last_seen,
+                });
 
             entry.event_count += session.event_count;
 
@@ -417,7 +422,9 @@ impl App {
     /// there are no live sessions.
     pub fn toggle_focus(&mut self) {
         self.focus = match self.focus {
-            FocusPanel::Tools if !self.scraper_snapshot.live_sessions.is_empty() => FocusPanel::Live,
+            FocusPanel::Tools if !self.scraper_snapshot.live_sessions.is_empty() => {
+                FocusPanel::Live
+            }
             _ => FocusPanel::Tools,
         };
     }

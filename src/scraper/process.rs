@@ -81,9 +81,7 @@ impl ProcessScanner {
                 .collect::<Vec<_>>()
                 .join(" ");
             let name = proc.name().to_string_lossy().into_owned();
-            let cwd = proc
-                .cwd()
-                .map(|p| p.to_string_lossy().into_owned());
+            let cwd = proc.cwd().map(|p| p.to_string_lossy().into_owned());
 
             self.cache.insert(
                 pid_u32,
@@ -96,7 +94,10 @@ impl ProcessScanner {
                     cwd,
                 },
             );
-            self.children_by_ppid.entry(ppid_u32).or_default().push(pid_u32);
+            self.children_by_ppid
+                .entry(ppid_u32)
+                .or_default()
+                .push(pid_u32);
         }
     }
 

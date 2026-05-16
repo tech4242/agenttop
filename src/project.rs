@@ -210,14 +210,10 @@ mod tests {
         let project_dir = tmp.path().join("-Users-test-myproject");
         fs::create_dir_all(&project_dir).unwrap();
 
-        create_test_sessions_index(
-            &project_dir,
-            &[("session-123", "/Users/test/myproject")],
-        );
+        create_test_sessions_index(&project_dir, &[("session-123", "/Users/test/myproject")]);
 
-        let index =
-            ProjectResolver::parse_sessions_index(&project_dir.join("sessions-index.json"))
-                .unwrap();
+        let index = ProjectResolver::parse_sessions_index(&project_dir.join("sessions-index.json"))
+            .unwrap();
         assert_eq!(index.entries.len(), 1);
         assert_eq!(index.entries[0].session_id, "session-123");
         assert_eq!(index.entries[0].project_path, "/Users/test/myproject");

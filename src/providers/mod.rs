@@ -11,8 +11,8 @@ pub mod claude_code;
 pub mod cline;
 pub mod copilot_chat;
 pub mod gemini_cli;
-pub mod opencode;
 pub mod openai_codex;
+pub mod opencode;
 pub mod qwen_code;
 
 use anyhow::Result;
@@ -206,7 +206,9 @@ mod tests {
             Some("cline")
         );
         assert_eq!(
-            registry.find_by_service_name("copilot-chat").map(|p| p.id()),
+            registry
+                .find_by_service_name("copilot-chat")
+                .map(|p| p.id()),
             Some("copilot_chat")
         );
         assert_eq!(

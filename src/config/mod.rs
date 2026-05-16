@@ -176,8 +176,8 @@ pub fn ensure_otel_configured() -> Result<()> {
 /// `settings.json`. Idempotent — running twice is a no-op once the hook is
 /// already pointed at our script. Returns `Ok(true)` if any change was made.
 pub fn install_statusline_hook() -> Result<bool> {
-    let home = dirs::home_dir()
-        .ok_or_else(|| anyhow::anyhow!("Could not determine home directory"))?;
+    let home =
+        dirs::home_dir().ok_or_else(|| anyhow::anyhow!("Could not determine home directory"))?;
     install_statusline_hook_in(&home.join(".claude"))
 }
 
@@ -324,7 +324,11 @@ mod tests {
             "enableTelemetry": true,
             "env": { "FOO": "bar" }
         });
-        fs::write(&settings_path, serde_json::to_string_pretty(&original).unwrap()).unwrap();
+        fs::write(
+            &settings_path,
+            serde_json::to_string_pretty(&original).unwrap(),
+        )
+        .unwrap();
 
         install_statusline_hook_in(&claude_dir).unwrap();
 

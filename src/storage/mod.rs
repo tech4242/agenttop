@@ -352,10 +352,7 @@ impl StorageHandle {
         rx.recv()?
     }
 
-    pub fn get_distinct_service_names(
-        &self,
-        since: Option<DateTime<Utc>>,
-    ) -> Result<Vec<String>> {
+    pub fn get_distinct_service_names(&self, since: Option<DateTime<Utc>>) -> Result<Vec<String>> {
         let (tx, rx) = mpsc::channel();
         self.sender
             .send(StorageCommand::GetDistinctServiceNames { since, tx })?;
@@ -365,11 +362,7 @@ impl StorageHandle {
     /// Tokens-per-second over the most recent `window_secs`, bucketed into
     /// `points` equal-width slots. Returned Vec is always length `points`
     /// (zero-padded at the front if there's no data).
-    pub fn get_token_rate_series(
-        &self,
-        window_secs: u64,
-        points: usize,
-    ) -> Result<Vec<f64>> {
+    pub fn get_token_rate_series(&self, window_secs: u64, points: usize) -> Result<Vec<f64>> {
         let (tx, rx) = mpsc::channel();
         self.sender.send(StorageCommand::GetTokenRateSeries {
             window_secs,
@@ -1097,7 +1090,10 @@ impl Storage {
             buckets[idx] += count;
         }
 
-        Ok(buckets.into_iter().map(|c| c as f64 / bucket_secs).collect())
+        Ok(buckets
+            .into_iter()
+            .map(|c| c as f64 / bucket_secs)
+            .collect())
     }
 
     /// Get distinct projects detected from file paths in telemetry
