@@ -27,19 +27,19 @@
 A terminal-native observability dashboard for AI coding agents. Real-time visibility into tool usage, token consumption, and productivity metrics.
 
 ```
-┌─ agenttop ───────────────────────────── Agent: Claude Code  Active: 1h 47m ─┐
-│ Tokens  In: 89K  Out: 42K  Cache: 25K (94% reuse)  Session Total: 156K      │
-├─────────────────────────────────────────────────────────────────────────────┤
-│ API: 47 calls │ 1.2s avg │ 2 errors                                         │
-├─────────────────────────────────────────────────────────────────────────────┤
-│ TOOL         CALLS  ERR  APR%   AVG      RANGE        LAST   FREQ           │
-│ ▶ Read         89    0  100%    12ms    5ms-45ms      5s    ██████████░░    │
-│   Bash         47    1   98%   234ms    50ms-2.1s     2s    █████░░░░░░░    │
-│   Edit         34    2   94%    45ms   10ms-200ms    10s    ████░░░░░░░░    │
-├─────────────────────────────────────────────────────────────────────────────┤
-│ MCP Tools                                                                   │
-│   context7:*   15    1   93%   345ms  100ms-800ms    20s    ██████████░░    │
-└───── [q]uit [s]ort [p]ause [d]etail [t]ime [r]eset [a]gent ─────────────────┘
+┌─ agenttop ────────────── Project: myapp  Agent: Claude Code  Active: 1h 47m ─┐
+│ Tokens  In: 89K  Out: 42K  Cache: 25K (94% reuse)  Session Total: 156K       │
+├──────────────────────────────────────────────────────────────────────────────┤
+│ API: 47 calls │ 1.2s avg │ 2 errors                                          │
+├──────────────────────────────────────────────────────────────────────────────┤
+│ TOOL         CALLS  ERR  APR%   AVG      RANGE        LAST   FREQ            │
+│ ▶ Read         89    0  100%    12ms    5ms-45ms      5s    ██████████░░     │
+│   Bash         47    1   98%   234ms    50ms-2.1s     2s    █████░░░░░░░     │
+│   Edit         34    2   94%    45ms   10ms-200ms    10s    ████░░░░░░░░     │
+├──────────────────────────────────────────────────────────────────────────────┤
+│ MCP Tools                                                                    │
+│   context7:*   15    1   93%   345ms  100ms-800ms    20s    ██████████░░     │
+└───── [q]uit [s]ort [p]ause [d]etail [t]ime [r] project [a]gent ──────────────┘
 ```
 
 ## Origin Story
@@ -58,28 +58,41 @@ If you want to contribute, please let me know!
 
 | Agent | OTLP Support | Signals | MCP Tools | Key Metrics |
 |-------|--------------|---------|-----------|-------------|
-| **Claude Code** | ✅ Full | Metrics, Logs | Anonymized (`mcp_tool`) | tokens, cost, tools, LOC |
-| **OpenAI Codex CLI** | ✅ Partial | Logs, Traces | Full names | tokens, tools, prompts |
+| **Claude Code** | ✅ Full | Metrics, Logs | Full names (auto-enabled via `OTEL_LOG_TOOL_DETAILS=1`) | tokens, cost, tools, LOC, compaction |
+| **OpenAI Codex CLI** | ⚠️ Partial | Logs, Traces | Full names | tokens, tools, prompts (interactive only — see caveat) |
 | **Gemini CLI** | ✅ Full | Metrics, Logs | Full names + `tool_type` | 40+ metrics |
-| **Qwen Code** | ✅ Full | Metrics, Logs | N/A | tokens, diff stats |
-| **Cline** | ⚠️ Via provider | Logs, Metrics | N/A | events, errors |
-| **Mistral Vibe** | ❌ None | - | - | - |
+| **Qwen Code** | ✅ Full | Metrics, Logs | Supported | tokens, diff stats |
+| **Cline** | ✅ Full (Cline Enterprise) | Logs, Metrics | via `use_mcp_tool` | `cline.turns.total`, tool calls |
+| **GitHub Copilot Chat** | ✅ Full (since Feb 2026) | Metrics, Logs, Traces | Unconfirmed | OTel GenAI conventions (tokens, latency, model) |
+| **opencode** | ⚠️ Plugin (`DEVtheOPS/opencode-plugin-otel`) | Logs, Metrics | mirrors Claude Code | tokens, tools |
+| **Mistral Vibe** | ⚠️ Opt-out telemetry, OTLP path undocumented | — | — | — |
 | **Cursor** | ❌ Proprietary | Admin API only | N/A | aggregate stats |
-| **GitHub Copilot** | ❌ Proprietary | REST API only | N/A | usage rates |
-| **Aider** | ❌ None | - | - | - |
+| **GitHub Copilot CLI** | ❌ Proprietary | REST API only | N/A | usage rates |
+| **Aider** | ❌ None | — | — | — |
 
 ### Some notes on Limitations
 
 #### MCP Tool Names (Claude Code)
-Claude Code anonymizes MCP tool names in telemetry for privacy (v2.1.2+).
-All MCP tools appear as `mcp_tool`. Other agents (Codex, Gemini) expose full names.
+Claude Code 2.1.2+ anonymizes MCP tool names by default. The opt-in env var
+`OTEL_LOG_TOOL_DETAILS=1` makes the per-server names available again — Claude Code
+emits them in `tool_parameters` as `{"mcp_server_name": "...", "mcp_tool_name": "..."}`,
+and agenttop reconstitutes the full `mcp__<server>__<tool>` form so MCP usage
+shows up grouped by server in the TUI. `agenttop --setup claude` writes this
+env var for you.
 
-There is an open issue already at: https://github.com/anthropics/claude-code/issues/17046 
+History: this was tracked as https://github.com/anthropics/claude-code/issues/17046
+(closed Jan 2026).
 
 #### Context Window Usage
-Claude Code does NOT expose context window usage or compaction status in telemetry.
-The ~200K context window and ~75% compaction threshold are internal only.
-agenttop shows cumulative session tokens, not context window remaining.
+Claude Code still does NOT expose live context window usage in telemetry.
+However, **compaction events** (`event.name = "claude_code.compaction"`) are now
+emitted with `pre_tokens`/`post_tokens`, and agenttop surfaces a count + last
+delta in the header so you can see when compaction kicked in.
+
+#### OpenAI Codex CLI caveat
+As of 2026-Q1, `codex exec` and `codex mcp-server` emit no telemetry — only
+interactive `codex` sessions populate OTLP. See
+https://github.com/openai/codex/issues/12913.
 
 #### Approval Rate
 The `decision` attribute for tool approval tracking is not consistently present
@@ -88,7 +101,14 @@ in all Claude Code versions. APR% may show as 100% when data is unavailable.
 
 ## Features
 
-- **Multi-Agent Support** - Automatic detection of Claude Code, Gemini CLI, OpenAI Codex, and Qwen Code
+- **Multi-Agent Support** - Automatic detection of Claude Code, Gemini CLI, OpenAI Codex, Qwen Code, Cline, GitHub Copilot Chat, and opencode (via `service.name`)
+- **Live Session Panel** - For Claude Code sessions scraped from `~/.claude/sessions/`: per-session status (Thinking / Executing / Waiting / RateLimited), current tool + arg, context window %, RSS, and any subagents
+- **Rate-Limit Gauges** - 5-hour and 7-day Claude quota bars + reset countdown (requires `agenttop --setup claude` to install the StatusLine hook)
+- **Token-rate Sparkline** - Tokens/sec over the last 5 minutes, bucketed into a braille sparkline
+- **Host Vitals** - CPU%, MEM%, and 1-min load average in the header (cross-platform via `sysinfo`)
+- **Open-Port + Orphan Tracking** - Ports opened by agent child processes; surfaces "orphan" ports left behind when a session dies
+- **Project Filtering** - Auto-detects project from file paths, filter with `[r]`
+- **Compaction Tracking** - Header shows compaction event count and last `pre→post` token delta (Claude Code 2026+)
 - **Token Tracking** - Input, output, and cache token metrics
 - **Tool Table** - Real-time tool call metrics with:
   - Call count and error count
@@ -140,10 +160,14 @@ sudo mv agenttop /usr/local/bin/
 agenttop
 
 # Configure a specific provider
-agenttop --setup claude    # Configure Claude Code
-agenttop --setup gemini    # Configure Gemini CLI
-agenttop --setup qwen      # Configure Qwen Code
-agenttop --setup all       # Configure all JSON-based providers
+agenttop --setup claude    # Configure Claude Code (auto-writes ~/.claude/settings.json)
+agenttop --setup gemini    # Configure Gemini CLI (auto)
+agenttop --setup qwen      # Configure Qwen Code (auto)
+agenttop --setup copilot   # Configure GitHub Copilot Chat (auto-writes VSCode settings.json)
+agenttop --setup codex     # Print Codex TOML setup instructions
+agenttop --setup cline     # Print Cline Enterprise dashboard setup instructions
+agenttop --setup opencode  # Print opencode plugin setup instructions
+agenttop --setup all       # Run every provider's setup
 
 # Run in headless mode (no TUI, just OTLP receiver)
 agenttop --headless
@@ -164,7 +188,7 @@ That's it! agenttop automatically:
 | `p` | Pause/resume updates |
 | `d` / `Enter` | Show tool details |
 | `t` | Cycle time filter |
-| `r` | Reset statistics |
+| `r` | Cycle project filter |
 | `a` | Cycle through detected agents |
 | `↑`/`k` | Select previous |
 | `↓`/`j` | Select next |
@@ -183,15 +207,27 @@ agenttop automatically configures Claude Code's `~/.claude/settings.json` with t
     "CLAUDE_CODE_ENABLE_TELEMETRY": "1",
     "OTEL_METRICS_EXPORTER": "otlp",
     "OTEL_LOGS_EXPORTER": "otlp",
+    "OTEL_LOG_TOOL_DETAILS": "1",
     "OTEL_EXPORTER_OTLP_PROTOCOL": "http/protobuf",
     "OTEL_EXPORTER_OTLP_ENDPOINT": "http://localhost:4318"
   }
 }
 ```
 
-A backup is created at `~/.claude/settings.json.bak` before any modifications.
+`OTEL_LOG_TOOL_DETAILS=1` is what makes per-MCP-server tool names visible
+(see Limitations above). A backup is created at `~/.claude/settings.json.bak`
+before any modifications.
 
 **Note:** After agenttop configures your settings, restart Claude Code for the telemetry to take effect.
+
+#### StatusLine hook (rate-limit ingestion)
+
+`agenttop --setup claude` also writes `~/.claude/agenttop-statusline.sh` and
+registers it as Claude Code's `statusLine` command. The hook captures the
+rate-limit JSON Claude pipes to its status bar and writes
+`~/.claude/agenttop-rate-limits.json`, which the TUI reads to render the
+Quota panel. Requires `jq` on `$PATH`; degrades to a plain status line
+otherwise. Anything older than 10 minutes is treated as stale and ignored.
 
 ### OpenAI Codex CLI (Manual Setup Required)
 
@@ -204,9 +240,47 @@ exporter = "otlp-http"
 endpoint = "http://localhost:4318/v1/logs"
 ```
 
+Caveat: as of 2026-Q1, `codex exec` and `codex mcp-server` emit no telemetry
+([codex#12913](https://github.com/openai/codex/issues/12913)) — only interactive
+sessions populate the receiver.
+
 ### Gemini CLI / Qwen Code (Auto-configured)
 
 Run `agenttop --setup gemini` or `agenttop --setup qwen` to auto-configure these providers.
+
+### GitHub Copilot Chat (Auto-configured)
+
+`agenttop --setup copilot` writes the OTLP keys into your VSCode user
+`settings.json` and creates a `.bak` alongside it:
+
+```json
+{
+  "github.copilot.chat.otel.enabled": true,
+  "github.copilot.chat.otel.otlpEndpoint": "http://localhost:4318"
+}
+```
+
+Reload VSCode after running it. Set `"github.copilot.chat.otel.captureContent": true`
+yourself if you want prompts/responses captured (opt-in).
+
+### Cline (Manual via Cline Enterprise dashboard)
+
+Cline emits standard OTLP but is configured through Cline Enterprise's remote
+configuration dashboard, not a local file. Point its OTLP endpoint at
+`http://localhost:4318` and set `OTEL_SERVICE_NAME=cline` so agenttop can
+distinguish it from other agents.
+
+### opencode (Manual via community plugin)
+
+opencode (sst/opencode) doesn't have native OTLP yet. Install the community
+plugin [`DEVtheOPS/opencode-plugin-otel`](https://github.com/DEVtheOPS/opencode-plugin-otel)
+and set the env vars it documents:
+
+```bash
+export OPENCODE_ENABLE_TELEMETRY=1
+export OPENCODE_OTLP_ENDPOINT=http://localhost:4318
+export OPENCODE_OTLP_PROTOCOL=http/protobuf
+```
 
 ## Data Storage
 
@@ -218,19 +292,30 @@ Data is automatically pruned after 7 days.
 
 ## How It Works
 
-agenttop uses Claude Code's native OpenTelemetry support to collect metrics:
+agenttop combines two data sources: vendor-neutral OTLP telemetry (for any
+agent) and local file/process scraping (for live state that telemetry doesn't
+expose).
 
 ```
-Claude Code                        agenttop
-    │                                  │
-    ├── OTEL metrics ─────────────────►│ HTTP OTLP Receiver
-    │   (port 4318)                    │     │
-    │                                  │     ▼
-    └── OTEL events ──────────────────►│ DuckDB (embedded)
-        (tool_result, api_request)     │     │
-                                       │     ▼
-                                       │ Ratatui TUI
+Claude Code / Gemini / Codex / …            agenttop
+        │                                       │
+        ├── OTEL metrics ──────────────────────►│ HTTP OTLP Receiver
+        │   (port 4318)                         │     │
+        │                                       │     ▼
+        └── OTEL events ──────────────────────►│ DuckDB (embedded, 7-day retention)
+            (tool_result, api_request)          │     │
+                                                │     ▼
+Local FS / process tree                         │ Ratatui TUI
+        │                                       │ ▲
+        ├── ~/.claude/sessions/{PID}.json ─────►│ │
+        ├── ~/.claude/projects/.../*.jsonl ────►│ │ Scraper (sysinfo + file tail)
+        ├── ~/.claude/agenttop-rate-limits.json►│ │
+        ├── lsof (listening ports) ────────────►│ │
+        └── sysinfo (CPU / MEM / load / RSS) ──►│
 ```
+
+The scraper runs every refresh tick (~100 ms) but defers expensive ops like
+port enumeration to a slow cycle (~5 s).
 
 ### Metrics Collected
 

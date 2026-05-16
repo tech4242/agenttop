@@ -1,6 +1,9 @@
 mod config;
+mod model_info;
 mod otlp;
+mod project;
 mod providers;
+mod scraper;
 mod storage;
 mod tui;
 
@@ -18,14 +21,18 @@ struct Args {
     #[arg(short = 'H', long)]
     headless: bool,
 
-    /// Configure OTLP telemetry for a provider (claude, gemini, qwen, all)
+    /// Configure OTLP telemetry for a provider
+    /// (claude, gemini, qwen, codex, cline, copilot, opencode, all)
     #[arg(long, value_name = "PROVIDER")]
     setup: Option<String>,
 }
 
 fn run_setup(provider_name: &str) -> Result<()> {
     let providers_to_setup: Vec<&str> = if provider_name == "all" {
-        vec!["claude", "gemini", "qwen"]
+        // "all" runs every provider that has auto-config; manual ones print instructions.
+        vec![
+            "claude", "gemini", "qwen", "copilot", "codex", "cline", "opencode",
+        ]
     } else {
         vec![provider_name]
     };
@@ -35,6 +42,9 @@ fn run_setup(provider_name: &str) -> Result<()> {
             "claude" => "claude_code",
             "gemini" => "gemini_cli",
             "qwen" => "qwen_code",
+            "copilot" => "copilot_chat",
+            "cline" => "cline",
+            "opencode" => "opencode",
             "codex" | "openai" => {
                 println!("OpenAI Codex uses TOML config format (~/.codex/config.toml).");
                 println!("Please configure manually. Add to your config.toml:");
@@ -44,11 +54,18 @@ fn run_setup(provider_name: &str) -> Result<()> {
                 println!("[otel.exporter.otlp-http]");
                 println!("endpoint = \"http://localhost:4318/v1/logs\"");
                 println!();
+                println!(
+                    "Note: as of 2026-Q1, `codex exec` and `codex mcp-server` emit no telemetry"
+                );
+                println!("(see https://github.com/openai/codex/issues/12913).");
+                println!();
                 continue;
             }
             _ => {
                 eprintln!("Unknown provider: {}", name);
-                eprintln!("Available providers: claude, gemini, qwen, codex, all");
+                eprintln!(
+                    "Available providers: claude, gemini, qwen, codex, cline, copilot, opencode, all"
+                );
                 continue;
             }
         };
@@ -69,10 +86,32 @@ fn run_setup(provider_name: &str) -> Result<()> {
                     );
                 }
                 Ok(false) => {
-                    println!("  {} is already configured correctly.", provider.name());
+                    if let Some(instructions) = provider.setup_instructions() {
+                        // Manual config path — print the instructions instead of "already configured".
+                        println!("{}", instructions);
+                    } else {
+                        println!("  {} is already configured correctly.", provider.name());
+                    }
                 }
                 Err(e) => {
                     eprintln!("  Error configuring {}: {}", provider.name(), e);
+                    if let Some(instructions) = provider.setup_instructions() {
+                        println!();
+                        println!("{}", instructions);
+                    }
+                }
+            }
+
+            // For Claude Code, also install the StatusLine hook that powers
+            // the in-TUI quota gauges. Best-effort — log warning on failure
+            // since OTLP is the primary path.
+            if provider_id == "claude_code" {
+                match crate::config::install_statusline_hook() {
+                    Ok(true) => println!(
+                        "  Installed agenttop StatusLine hook (rate-limit capture)"
+                    ),
+                    Ok(false) => {}
+                    Err(e) => eprintln!("  Could not install StatusLine hook: {}", e),
                 }
             }
         }

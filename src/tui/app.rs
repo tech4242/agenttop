@@ -1,8 +1,36 @@
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 
+use crate::project::ProjectResolver;
 use crate::providers::PROVIDER_REGISTRY;
-use crate::storage::{ApiMetrics, SessionMetrics, StorageHandle, TokenMetrics, ToolMetrics};
+use crate::scraper::{Scraper, ScraperSnapshot};
+
+fn humanize_age(d: chrono::Duration) -> String {
+    let secs = d.num_seconds().max(0);
+    if secs < 60 {
+        format!("{}s ago", secs)
+    } else if secs < 3600 {
+        format!("{}m ago", secs / 60)
+    } else if secs < 86400 {
+        format!("{}h ago", secs / 3600)
+    } else {
+        format!("{}d ago", secs / 86400)
+    }
+}
+
+fn humanize_tokens(n: u64) -> String {
+    if n >= 1_000_000 {
+        format!("{:.1}M", n as f64 / 1_000_000.0)
+    } else if n >= 1_000 {
+        format!("{}K", n / 1_000)
+    } else {
+        n.to_string()
+    }
+}
+use crate::storage::{
+    ApiMetrics, CompactionStats, ProjectInfo, SessionMetrics, StorageHandle, TokenMetrics,
+    ToolMetrics,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum TimeFilter {
@@ -41,8 +69,23 @@ pub enum SortColumn {
     Name,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum ProjectFilter {
+    #[default]
+    All,
+    Project(String),
+}
+
 pub struct App {
     storage: StorageHandle,
+    /// Project resolver for mapping session.id to project names
+    project_resolver: ProjectResolver,
+    /// Cross-tick scraper for live process/file state (sessions, ports, host).
+    scraper: Scraper,
+    /// Latest snapshot from the scraper, refreshed each tick.
+    pub scraper_snapshot: ScraperSnapshot,
+    /// Token-rate over the last 5 minutes, bucketed for the sparkline.
+    pub token_rate_series: Vec<f64>,
     pub tool_metrics: Vec<ToolMetrics>,
     pub token_metrics: TokenMetrics,
     pub session_metrics: SessionMetrics,
@@ -58,12 +101,22 @@ pub struct App {
     pub detected_agents: Vec<String>,
     /// Currently selected agent index (for filtering display)
     pub selected_agent_index: usize,
+    /// Detected projects resolved from session data
+    pub detected_projects: Vec<ProjectInfo>,
+    /// Current project filter
+    pub project_filter: ProjectFilter,
+    /// Compaction stats from claude_code.compaction events
+    pub compaction_stats: CompactionStats,
 }
 
 impl App {
     pub fn new(storage: StorageHandle) -> Self {
         Self {
             storage,
+            project_resolver: ProjectResolver::new(),
+            scraper: Scraper::new(),
+            scraper_snapshot: ScraperSnapshot::default(),
+            token_rate_series: Vec::new(),
             tool_metrics: Vec::new(),
             token_metrics: TokenMetrics::default(),
             session_metrics: SessionMetrics::default(),
@@ -77,6 +130,9 @@ impl App {
             time_filter: TimeFilter::default(),
             detected_agents: Vec::new(),
             selected_agent_index: 0,
+            detected_projects: Vec::new(),
+            project_filter: ProjectFilter::default(),
+            compaction_stats: CompactionStats::default(),
         }
     }
 
@@ -85,10 +141,77 @@ impl App {
             return Ok(());
         }
 
+        // Scrape live process/file state — independent of OTLP, runs every tick.
+        self.scraper_snapshot = self.scraper.tick();
+        // Token-rate sparkline: last 5 minutes bucketed into 60 points (~5s each).
+        self.token_rate_series = self
+            .storage
+            .get_token_rate_series(300, 60)
+            .unwrap_or_default();
+
         self.tool_metrics = self.storage.get_tool_metrics(self.time_filter.since())?;
         self.token_metrics = self.storage.get_token_metrics(self.time_filter.since())?;
         self.session_metrics = self.storage.get_session_metrics(self.time_filter.since())?;
         self.api_metrics = self.storage.get_api_metrics(self.time_filter.since())?;
+
+        // Get distinct sessions and map to projects using ProjectResolver
+        let sessions = self
+            .storage
+            .get_distinct_sessions(self.time_filter.since())?;
+
+        // Aggregate sessions by project name
+        use std::collections::HashMap;
+        let mut project_aggregates: HashMap<String, ProjectInfo> = HashMap::new();
+
+        for session in sessions {
+            // Resolve session to project name, or use truncated session ID as fallback
+            let project_name = self
+                .project_resolver
+                .resolve(&session.session_id)
+                .map(|p| p.name.clone())
+                .unwrap_or_else(|| {
+                    // Fallback: use first 8 chars of session ID
+                    format!("session:{}", &session.session_id[..8.min(session.session_id.len())])
+                });
+
+            let entry = project_aggregates.entry(project_name.clone()).or_insert(ProjectInfo {
+                name: project_name,
+                event_count: 0,
+                first_seen: session.first_seen,
+                last_seen: session.last_seen,
+            });
+
+            entry.event_count += session.event_count;
+
+            // Update first_seen to earliest
+            if let (Some(existing), Some(new)) = (entry.first_seen, session.first_seen) {
+                if new < existing {
+                    entry.first_seen = Some(new);
+                }
+            } else if entry.first_seen.is_none() {
+                entry.first_seen = session.first_seen;
+            }
+
+            // Update last_seen to latest
+            if let (Some(existing), Some(new)) = (entry.last_seen, session.last_seen) {
+                if new > existing {
+                    entry.last_seen = Some(new);
+                }
+            } else if entry.last_seen.is_none() {
+                entry.last_seen = session.last_seen;
+            }
+        }
+
+        // Convert to sorted vector (by event_count descending)
+        let mut projects: Vec<ProjectInfo> = project_aggregates.into_values().collect();
+        projects.sort_by(|a, b| b.event_count.cmp(&a.event_count));
+        self.detected_projects = projects;
+
+        self.compaction_stats = self
+            .storage
+            .get_compaction_stats(self.time_filter.since())
+            .unwrap_or_default();
+
         self.last_refresh = Utc::now();
 
         // Detect agents from tool usage and model names
@@ -106,6 +229,20 @@ impl App {
                 if provider.shorten_model_name(model_name).is_some() {
                     new_agents.push(provider.id());
                     break;
+                }
+            }
+        }
+
+        // Detect agents from OTel `service.name` resource attribute. This catches
+        // Cline / Copilot Chat / opencode where tool names and model patterns
+        // overlap with other providers.
+        if let Ok(service_names) = self
+            .storage
+            .get_distinct_service_names(self.time_filter.since())
+        {
+            for service_name in service_names {
+                if let Some(provider) = PROVIDER_REGISTRY.find_by_service_name(&service_name) {
+                    new_agents.push(provider.id());
                 }
             }
         }
@@ -214,11 +351,6 @@ impl App {
         }
     }
 
-    pub fn reset_stats(&mut self) {
-        // Clear old data and reset selection
-        self.selected_index = 0;
-    }
-
     pub fn selected_tool(&self) -> Option<&ToolMetrics> {
         self.tool_metrics.get(self.selected_index)
     }
@@ -290,6 +422,37 @@ impl App {
         }
     }
 
+    /// Format the compaction summary for the header. Returns `None` when no
+    /// compaction events are present in the current time window.
+    pub fn format_compaction_summary(&self) -> Option<String> {
+        if self.compaction_stats.count == 0 {
+            return None;
+        }
+
+        let mut parts = vec![format!("Compactions: {}", self.compaction_stats.count)];
+        let mut detail = Vec::new();
+
+        if let Some(seen) = self.compaction_stats.last_seen {
+            detail.push(format!("last {}", humanize_age(Utc::now() - seen)));
+        }
+
+        if let (Some(pre), Some(post)) = (
+            self.compaction_stats.last_pre_tokens,
+            self.compaction_stats.last_post_tokens,
+        ) {
+            let saved = pre.saturating_sub(post);
+            if saved > 0 {
+                detail.push(format!("-{}", humanize_tokens(saved)));
+            }
+        }
+
+        if !detail.is_empty() {
+            parts.push(format!("({})", detail.join(", ")));
+        }
+
+        Some(parts.join(" "))
+    }
+
     /// Format API latency as human-readable string
     pub fn format_api_latency(&self) -> String {
         let ms = self.api_metrics.avg_latency_ms;
@@ -323,5 +486,34 @@ impl App {
         if !self.detected_agents.contains(&agent_id.to_string()) {
             self.detected_agents.push(agent_id.to_string());
         }
+    }
+
+    /// Cycle through detected projects: All -> Project1 -> Project2 -> ... -> All
+    pub fn cycle_project(&mut self) {
+        if self.detected_projects.is_empty() {
+            self.project_filter = ProjectFilter::All;
+            return;
+        }
+
+        self.project_filter = match &self.project_filter {
+            ProjectFilter::All => {
+                // Go to first project
+                ProjectFilter::Project(self.detected_projects[0].name.clone())
+            }
+            ProjectFilter::Project(current) => {
+                // Find current project index and go to next, or wrap to All
+                let current_idx = self
+                    .detected_projects
+                    .iter()
+                    .position(|p| &p.name == current);
+
+                match current_idx {
+                    Some(idx) if idx + 1 < self.detected_projects.len() => {
+                        ProjectFilter::Project(self.detected_projects[idx + 1].name.clone())
+                    }
+                    _ => ProjectFilter::All,
+                }
+            }
+        };
     }
 }

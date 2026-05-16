@@ -121,7 +121,16 @@ struct OtlpLogsRequest {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ResourceLogs {
+    #[serde(default)]
+    resource: Option<ResourceJson>,
     scope_logs: Vec<ScopeLogs>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ResourceJson {
+    #[serde(default)]
+    attributes: Vec<Attribute>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -392,6 +401,21 @@ fn parse_logs_proto(request: ExportLogsServiceRequest) -> Result<Vec<LogEvent>> 
     let mut events = Vec::new();
 
     for resource in request.resource_logs {
+        let resource_attrs: HashMap<String, String> = resource
+            .resource
+            .as_ref()
+            .map(|r| {
+                r.attributes
+                    .iter()
+                    .filter_map(|a| {
+                        a.value
+                            .as_ref()
+                            .and_then(|v| get_any_value_as_string(v).map(|s| (a.key.clone(), s)))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
         for scope in resource.scope_logs {
             for record in scope.log_records {
                 // Extract event.name from attributes
@@ -424,7 +448,7 @@ fn parse_logs_proto(request: ExportLogsServiceRequest) -> Result<Vec<LogEvent>> 
                 }
 
                 // Store ALL attributes as a HashMap for query-time filtering
-                let attributes: HashMap<String, String> = record
+                let mut attributes: HashMap<String, String> = record
                     .attributes
                     .iter()
                     .filter_map(|a| {
@@ -433,6 +457,14 @@ fn parse_logs_proto(request: ExportLogsServiceRequest) -> Result<Vec<LogEvent>> 
                             .and_then(|v| get_any_value_as_string(v).map(|s| (a.key.clone(), s)))
                     })
                     .collect();
+
+                // Merge resource-level attributes (e.g. service.name) so detection
+                // and querying can see them per-event without a separate join.
+                for (k, v) in &resource_attrs {
+                    attributes.entry(k.clone()).or_insert_with(|| v.clone());
+                }
+
+                expand_mcp_tool_name(&mut attributes);
 
                 // Extract body if present
                 let body = record.body.as_ref().and_then(get_string_value);
@@ -462,6 +494,19 @@ fn parse_logs_json(request: OtlpLogsRequest) -> Result<Vec<LogEvent>> {
     let mut events = Vec::new();
 
     for resource in request.resource_logs {
+        let resource_attrs: HashMap<String, String> = resource
+            .resource
+            .as_ref()
+            .map(|r| {
+                r.attributes
+                    .iter()
+                    .filter_map(|a| {
+                        get_json_attribute_as_string(&a.value).map(|s| (a.key.clone(), s))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
         for scope in resource.scope_logs {
             for record in scope.log_records {
                 // Extract event.name from attributes
@@ -472,13 +517,19 @@ fn parse_logs_json(request: OtlpLogsRequest) -> Result<Vec<LogEvent>> {
                     .and_then(|a| a.value.string_value.clone());
 
                 // Store ALL attributes as a HashMap for query-time filtering
-                let attributes: HashMap<String, String> = record
+                let mut attributes: HashMap<String, String> = record
                     .attributes
                     .iter()
                     .filter_map(|a| {
                         get_json_attribute_as_string(&a.value).map(|s| (a.key.clone(), s))
                     })
                     .collect();
+
+                for (k, v) in &resource_attrs {
+                    attributes.entry(k.clone()).or_insert_with(|| v.clone());
+                }
+
+                expand_mcp_tool_name(&mut attributes);
 
                 // Extract body if present
                 let body = record.body.as_ref().and_then(|b| b.string_value.clone());
@@ -500,6 +551,30 @@ fn parse_logs_json(request: OtlpLogsRequest) -> Result<Vec<LogEvent>> {
     }
 
     Ok(events)
+}
+
+/// Reconstitute the full MCP tool name from `tool_parameters`.
+///
+/// Claude Code 2.1.2+ anonymizes MCP tool names as `mcp_tool` by default. When
+/// `OTEL_LOG_TOOL_DETAILS=1` is set, the real names land in `tool_parameters`
+/// as a JSON-encoded `{"mcp_server_name": "...", "mcp_tool_name": "..."}`.
+/// We rewrite `tool_name` back to `mcp__<server>__<tool>` so the rest of the
+/// pipeline (regex in storage, display in TUI) works unchanged.
+fn expand_mcp_tool_name(attributes: &mut HashMap<String, String>) {
+    if attributes.get("tool_name").map(String::as_str) != Some("mcp_tool") {
+        return;
+    }
+    let Some(raw) = attributes.get("tool_parameters") else {
+        return;
+    };
+    let Ok(parsed) = serde_json::from_str::<serde_json::Value>(raw) else {
+        return;
+    };
+    let server = parsed.get("mcp_server_name").and_then(|v| v.as_str());
+    let tool = parsed.get("mcp_tool_name").and_then(|v| v.as_str());
+    if let (Some(server), Some(tool)) = (server, tool) {
+        attributes.insert("tool_name".to_string(), format!("mcp__{server}__{tool}"));
+    }
 }
 
 /// Convert JSON AttributeValue to string
@@ -700,5 +775,75 @@ mod tests {
             events[2].event_name,
             Some("claude_code.tool_result".to_string())
         );
+    }
+
+    #[test]
+    fn test_expand_mcp_tool_name_structured() {
+        let mut attrs = HashMap::new();
+        attrs.insert("tool_name".to_string(), "mcp_tool".to_string());
+        attrs.insert(
+            "tool_parameters".to_string(),
+            r#"{"mcp_server_name":"context7","mcp_tool_name":"resolve-library-id"}"#.to_string(),
+        );
+
+        expand_mcp_tool_name(&mut attrs);
+
+        assert_eq!(
+            attrs.get("tool_name").map(String::as_str),
+            Some("mcp__context7__resolve-library-id")
+        );
+    }
+
+    #[test]
+    fn test_expand_mcp_tool_name_missing_parameters() {
+        let mut attrs = HashMap::new();
+        attrs.insert("tool_name".to_string(), "mcp_tool".to_string());
+
+        expand_mcp_tool_name(&mut attrs);
+
+        // No tool_parameters present, leave tool_name alone.
+        assert_eq!(attrs.get("tool_name").map(String::as_str), Some("mcp_tool"));
+    }
+
+    #[test]
+    fn test_expand_mcp_tool_name_malformed_json() {
+        let mut attrs = HashMap::new();
+        attrs.insert("tool_name".to_string(), "mcp_tool".to_string());
+        attrs.insert("tool_parameters".to_string(), "not valid json{".to_string());
+
+        // Must not panic.
+        expand_mcp_tool_name(&mut attrs);
+
+        assert_eq!(attrs.get("tool_name").map(String::as_str), Some("mcp_tool"));
+    }
+
+    #[test]
+    fn test_expand_mcp_tool_name_non_mcp_passthrough() {
+        let mut attrs = HashMap::new();
+        attrs.insert("tool_name".to_string(), "Read".to_string());
+        attrs.insert(
+            "tool_parameters".to_string(),
+            r#"{"mcp_server_name":"x","mcp_tool_name":"y"}"#.to_string(),
+        );
+
+        expand_mcp_tool_name(&mut attrs);
+
+        // Non-MCP tools must not be rewritten even if tool_parameters happens to parse.
+        assert_eq!(attrs.get("tool_name").map(String::as_str), Some("Read"));
+    }
+
+    #[test]
+    fn test_expand_mcp_tool_name_partial_fields() {
+        let mut attrs = HashMap::new();
+        attrs.insert("tool_name".to_string(), "mcp_tool".to_string());
+        attrs.insert(
+            "tool_parameters".to_string(),
+            r#"{"mcp_server_name":"context7"}"#.to_string(),
+        );
+
+        expand_mcp_tool_name(&mut attrs);
+
+        // Only one of the two fields present — fall through.
+        assert_eq!(attrs.get("tool_name").map(String::as_str), Some("mcp_tool"));
     }
 }

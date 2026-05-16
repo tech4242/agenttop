@@ -125,6 +125,33 @@ pub struct ApiMetrics {
     pub models: HashMap<String, u64>,
 }
 
+/// Session info from OTLP telemetry
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionInfo {
+    pub session_id: String,
+    pub event_count: u64,
+    pub first_seen: Option<DateTime<Utc>>,
+    pub last_seen: Option<DateTime<Utc>>,
+}
+
+/// Project info resolved from session data
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProjectInfo {
+    pub name: String,
+    pub event_count: u64,
+    pub first_seen: Option<DateTime<Utc>>,
+    pub last_seen: Option<DateTime<Utc>>,
+}
+
+/// Aggregated stats from claude_code.compaction events.
+#[derive(Debug, Clone, Default)]
+pub struct CompactionStats {
+    pub count: u64,
+    pub last_seen: Option<DateTime<Utc>>,
+    pub last_pre_tokens: Option<u64>,
+    pub last_post_tokens: Option<u64>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolEvent {
     pub timestamp: DateTime<Utc>,
@@ -176,6 +203,27 @@ enum StorageCommand {
     GetApiMetrics {
         since: Option<DateTime<Utc>>,
         tx: mpsc::Sender<Result<ApiMetrics>>,
+    },
+    GetDistinctProjects {
+        since: Option<DateTime<Utc>>,
+        tx: mpsc::Sender<Result<Vec<ProjectInfo>>>,
+    },
+    GetDistinctSessions {
+        since: Option<DateTime<Utc>>,
+        tx: mpsc::Sender<Result<Vec<SessionInfo>>>,
+    },
+    GetCompactionStats {
+        since: Option<DateTime<Utc>>,
+        tx: mpsc::Sender<Result<CompactionStats>>,
+    },
+    GetDistinctServiceNames {
+        since: Option<DateTime<Utc>>,
+        tx: mpsc::Sender<Result<Vec<String>>>,
+    },
+    GetTokenRateSeries {
+        window_secs: u64,
+        points: usize,
+        tx: mpsc::Sender<Result<Vec<f64>>>,
     },
     Shutdown,
 }
@@ -277,6 +325,55 @@ impl StorageHandle {
             .send(StorageCommand::GetApiMetrics { since, tx })?;
         rx.recv()?
     }
+
+    #[allow(dead_code)]
+    pub fn get_distinct_projects(&self, since: Option<DateTime<Utc>>) -> Result<Vec<ProjectInfo>> {
+        let (tx, rx) = mpsc::channel();
+        self.sender
+            .send(StorageCommand::GetDistinctProjects { since, tx })?;
+        rx.recv()?
+    }
+
+    pub fn get_distinct_sessions(&self, since: Option<DateTime<Utc>>) -> Result<Vec<SessionInfo>> {
+        let (tx, rx) = mpsc::channel();
+        self.sender
+            .send(StorageCommand::GetDistinctSessions { since, tx })?;
+        rx.recv()?
+    }
+
+    pub fn get_compaction_stats(&self, since: Option<DateTime<Utc>>) -> Result<CompactionStats> {
+        let (tx, rx) = mpsc::channel();
+        self.sender
+            .send(StorageCommand::GetCompactionStats { since, tx })?;
+        rx.recv()?
+    }
+
+    pub fn get_distinct_service_names(
+        &self,
+        since: Option<DateTime<Utc>>,
+    ) -> Result<Vec<String>> {
+        let (tx, rx) = mpsc::channel();
+        self.sender
+            .send(StorageCommand::GetDistinctServiceNames { since, tx })?;
+        rx.recv()?
+    }
+
+    /// Tokens-per-second over the most recent `window_secs`, bucketed into
+    /// `points` equal-width slots. Returned Vec is always length `points`
+    /// (zero-padded at the front if there's no data).
+    pub fn get_token_rate_series(
+        &self,
+        window_secs: u64,
+        points: usize,
+    ) -> Result<Vec<f64>> {
+        let (tx, rx) = mpsc::channel();
+        self.sender.send(StorageCommand::GetTokenRateSeries {
+            window_secs,
+            points,
+            tx,
+        })?;
+        rx.recv()?
+    }
 }
 
 fn run_storage_actor(storage: Storage, receiver: mpsc::Receiver<StorageCommand>) -> Result<()> {
@@ -321,6 +418,25 @@ fn run_storage_actor(storage: Storage, receiver: mpsc::Receiver<StorageCommand>)
             }
             StorageCommand::GetApiMetrics { since, tx } => {
                 let _ = tx.send(storage.get_api_metrics(since));
+            }
+            StorageCommand::GetDistinctProjects { since, tx } => {
+                let _ = tx.send(storage.get_distinct_projects(since));
+            }
+            StorageCommand::GetDistinctSessions { since, tx } => {
+                let _ = tx.send(storage.get_distinct_sessions(since));
+            }
+            StorageCommand::GetCompactionStats { since, tx } => {
+                let _ = tx.send(storage.get_compaction_stats(since));
+            }
+            StorageCommand::GetDistinctServiceNames { since, tx } => {
+                let _ = tx.send(storage.get_distinct_service_names(since));
+            }
+            StorageCommand::GetTokenRateSeries {
+                window_secs,
+                points,
+                tx,
+            } => {
+                let _ = tx.send(storage.get_token_rate_series(window_secs, points));
             }
             StorageCommand::Shutdown => break,
         }
@@ -750,6 +866,282 @@ impl Storage {
         metrics.total_errors = error_count as u64;
 
         Ok(metrics)
+    }
+
+    /// Distinct OTel `service.name` resource attributes seen on log events.
+    fn get_distinct_service_names(&self, since: Option<DateTime<Utc>>) -> Result<Vec<String>> {
+        let time_clause = since
+            .map(|dt| format!("AND timestamp >= '{}'", dt.to_rfc3339()))
+            .unwrap_or_default();
+
+        let query = format!(
+            r#"
+            SELECT DISTINCT json_extract_string(attributes, '$."service.name"') as service_name
+            FROM log_events
+            WHERE json_extract_string(attributes, '$."service.name"') IS NOT NULL {time_clause}
+            "#
+        );
+
+        let mut stmt = self.conn.prepare(&query)?;
+        let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+
+        let mut names = Vec::new();
+        for row in rows {
+            names.push(row?);
+        }
+        Ok(names)
+    }
+
+    /// Aggregate stats from `claude_code.compaction` log events.
+    fn get_compaction_stats(&self, since: Option<DateTime<Utc>>) -> Result<CompactionStats> {
+        let time_clause = since
+            .map(|dt| format!("AND timestamp >= '{}'", dt.to_rfc3339()))
+            .unwrap_or_default();
+
+        let count_query = format!(
+            r#"
+            SELECT COUNT(*)
+            FROM log_events
+            WHERE event_name = 'claude_code.compaction' {time_clause}
+            "#
+        );
+        let count: i64 = self
+            .conn
+            .query_row(&count_query, [], |row| row.get(0))
+            .unwrap_or(0);
+
+        if count == 0 {
+            return Ok(CompactionStats::default());
+        }
+
+        let latest_query = format!(
+            r#"
+            SELECT
+                CAST(timestamp AS VARCHAR) as ts,
+                json_extract_string(attributes, '$.pre_tokens') as pre_tokens,
+                json_extract_string(attributes, '$.post_tokens') as post_tokens
+            FROM log_events
+            WHERE event_name = 'claude_code.compaction' {time_clause}
+            ORDER BY timestamp DESC
+            LIMIT 1
+            "#
+        );
+
+        let parse_timestamp = |ts: String| -> Option<DateTime<Utc>> {
+            DateTime::parse_from_rfc3339(&ts)
+                .map(|dt| dt.with_timezone(&Utc))
+                .ok()
+                .or_else(|| {
+                    chrono::NaiveDateTime::parse_from_str(&ts, "%Y-%m-%d %H:%M:%S%.f")
+                        .or_else(|_| {
+                            chrono::NaiveDateTime::parse_from_str(&ts, "%Y-%m-%d %H:%M:%S")
+                        })
+                        .ok()
+                        .map(|naive| naive.and_utc())
+                })
+        };
+
+        let mut stats = CompactionStats {
+            count: count as u64,
+            ..Default::default()
+        };
+
+        let row = self.conn.query_row(&latest_query, [], |row| {
+            let ts: String = row.get(0)?;
+            let pre: Option<String> = row.get(1)?;
+            let post: Option<String> = row.get(2)?;
+            Ok((ts, pre, post))
+        });
+
+        if let Ok((ts, pre, post)) = row {
+            stats.last_seen = parse_timestamp(ts);
+            stats.last_pre_tokens = pre.and_then(|s| s.parse::<u64>().ok());
+            stats.last_post_tokens = post.and_then(|s| s.parse::<u64>().ok());
+        }
+
+        Ok(stats)
+    }
+
+    /// Get distinct sessions from OTLP telemetry
+    fn get_distinct_sessions(&self, since: Option<DateTime<Utc>>) -> Result<Vec<SessionInfo>> {
+        let time_clause = since
+            .map(|dt| format!("WHERE timestamp >= '{}'", dt.to_rfc3339()))
+            .unwrap_or_default();
+
+        let query = format!(
+            r#"
+            SELECT
+                json_extract_string(attributes, '$.session.id') as session_id,
+                COUNT(*) as event_count,
+                CAST(MIN(timestamp) AS VARCHAR) as first_seen,
+                CAST(MAX(timestamp) AS VARCHAR) as last_seen
+            FROM log_events
+            {time_clause}
+            {}
+            json_extract_string(attributes, '$.session.id') IS NOT NULL
+            GROUP BY session_id
+            ORDER BY event_count DESC
+            "#,
+            if time_clause.is_empty() {
+                "WHERE"
+            } else {
+                "AND"
+            }
+        );
+
+        let mut stmt = self.conn.prepare(&query)?;
+
+        let rows = stmt.query_map([], |row| {
+            let first_seen_str: Option<String> = row.get(2)?;
+            let last_seen_str: Option<String> = row.get(3)?;
+
+            // Parse timestamps (DuckDB format or RFC3339)
+            let parse_timestamp = |s: Option<String>| -> Option<DateTime<Utc>> {
+                s.and_then(|ts| {
+                    DateTime::parse_from_rfc3339(&ts)
+                        .map(|dt| dt.with_timezone(&Utc))
+                        .ok()
+                        .or_else(|| {
+                            chrono::NaiveDateTime::parse_from_str(&ts, "%Y-%m-%d %H:%M:%S%.f")
+                                .or_else(|_| {
+                                    chrono::NaiveDateTime::parse_from_str(&ts, "%Y-%m-%d %H:%M:%S")
+                                })
+                                .ok()
+                                .map(|naive| naive.and_utc())
+                        })
+                })
+            };
+
+            Ok(SessionInfo {
+                session_id: row.get(0)?,
+                event_count: row.get::<_, i64>(1)? as u64,
+                first_seen: parse_timestamp(first_seen_str),
+                last_seen: parse_timestamp(last_seen_str),
+            })
+        })?;
+
+        let mut sessions = Vec::new();
+        for row in rows {
+            sessions.push(row?);
+        }
+        Ok(sessions)
+    }
+
+    /// Tokens-per-second over the most recent `window_secs`, bucketed into
+    /// `points` equal-width slots. We fetch raw `(timestamp, count)` rows
+    /// once and bucket in Rust — keeps the SQL simple and avoids DuckDB
+    /// interval-arithmetic syntax differences across versions.
+    fn get_token_rate_series(&self, window_secs: u64, points: usize) -> Result<Vec<f64>> {
+        if points == 0 || window_secs == 0 {
+            return Ok(Vec::new());
+        }
+
+        let start = Utc::now() - chrono::Duration::seconds(window_secs as i64);
+        let query =
+            "SELECT CAST(timestamp AS VARCHAR), count FROM token_usage WHERE timestamp >= ?";
+        let mut stmt = self.conn.prepare(query)?;
+
+        let rows = stmt.query_map(params![start.to_rfc3339()], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)? as u64))
+        })?;
+
+        let bucket_secs = window_secs as f64 / points as f64;
+        let start_secs = start.timestamp() as f64;
+        let mut buckets = vec![0u64; points];
+
+        for row in rows {
+            let (ts_str, count) = row?;
+            let parsed = DateTime::parse_from_rfc3339(&ts_str)
+                .map(|dt| dt.with_timezone(&Utc))
+                .ok()
+                .or_else(|| {
+                    chrono::NaiveDateTime::parse_from_str(&ts_str, "%Y-%m-%d %H:%M:%S%.f")
+                        .or_else(|_| {
+                            chrono::NaiveDateTime::parse_from_str(&ts_str, "%Y-%m-%d %H:%M:%S")
+                        })
+                        .ok()
+                        .map(|n| n.and_utc())
+                });
+            let Some(parsed) = parsed else { continue };
+
+            let elapsed = parsed.timestamp() as f64 - start_secs;
+            if elapsed < 0.0 {
+                continue;
+            }
+            let idx = (elapsed / bucket_secs) as usize;
+            if idx < points {
+                buckets[idx] += count;
+            }
+        }
+
+        Ok(buckets.into_iter().map(|c| c as f64 / bucket_secs).collect())
+    }
+
+    /// Get distinct projects detected from file paths in telemetry
+    /// Note: This is a legacy method kept for backward compatibility.
+    /// Prefer using get_distinct_sessions() and mapping via ProjectResolver.
+    fn get_distinct_projects(&self, since: Option<DateTime<Utc>>) -> Result<Vec<ProjectInfo>> {
+        let time_clause = since
+            .map(|dt| format!("WHERE timestamp >= '{}'", dt.to_rfc3339()))
+            .unwrap_or_default();
+
+        let query = format!(
+            r#"
+            SELECT
+                json_extract_string(attributes, '$.detected.project') as project,
+                COUNT(*) as event_count,
+                CAST(MIN(timestamp) AS VARCHAR) as first_seen,
+                CAST(MAX(timestamp) AS VARCHAR) as last_seen
+            FROM log_events
+            {time_clause}
+            {}
+            json_extract_string(attributes, '$.detected.project') IS NOT NULL
+            GROUP BY project
+            ORDER BY event_count DESC
+            "#,
+            if time_clause.is_empty() {
+                "WHERE"
+            } else {
+                "AND"
+            }
+        );
+
+        let mut stmt = self.conn.prepare(&query)?;
+
+        let rows = stmt.query_map([], |row| {
+            let first_seen_str: Option<String> = row.get(2)?;
+            let last_seen_str: Option<String> = row.get(3)?;
+
+            // Parse timestamps (DuckDB format or RFC3339)
+            let parse_timestamp = |s: Option<String>| -> Option<DateTime<Utc>> {
+                s.and_then(|ts| {
+                    DateTime::parse_from_rfc3339(&ts)
+                        .map(|dt| dt.with_timezone(&Utc))
+                        .ok()
+                        .or_else(|| {
+                            chrono::NaiveDateTime::parse_from_str(&ts, "%Y-%m-%d %H:%M:%S%.f")
+                                .or_else(|_| {
+                                    chrono::NaiveDateTime::parse_from_str(&ts, "%Y-%m-%d %H:%M:%S")
+                                })
+                                .ok()
+                                .map(|naive| naive.and_utc())
+                        })
+                })
+            };
+
+            Ok(ProjectInfo {
+                name: row.get(0)?,
+                event_count: row.get::<_, i64>(1)? as u64,
+                first_seen: parse_timestamp(first_seen_str),
+                last_seen: parse_timestamp(last_seen_str),
+            })
+        })?;
+
+        let mut projects = Vec::new();
+        for row in rows {
+            projects.push(row?);
+        }
+        Ok(projects)
     }
 }
 

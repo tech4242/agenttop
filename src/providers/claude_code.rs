@@ -99,6 +99,10 @@ impl Provider for ClaudeCodeProvider {
         dirs::home_dir().map(|home| home.join(".claude").join("settings.json"))
     }
 
+    fn service_name(&self) -> Option<&'static str> {
+        Some("claude-code")
+    }
+
     fn ensure_configured(&self) -> Result<bool> {
         let settings_path = self
             .settings_path()
@@ -110,13 +114,15 @@ impl Provider for ClaudeCodeProvider {
                 fs::create_dir_all(parent)?;
             }
 
-            // Create new settings file with OTEL enabled via env block
+            // Create new settings file with OTEL enabled via env block.
+            // OTEL_LOG_TOOL_DETAILS=1 opts in to per-MCP-server tool names (Claude Code 2.1.2+).
             let settings = serde_json::json!({
                 "enableTelemetry": true,
                 "env": {
                     "CLAUDE_CODE_ENABLE_TELEMETRY": "1",
                     "OTEL_METRICS_EXPORTER": "otlp",
                     "OTEL_LOGS_EXPORTER": "otlp",
+                    "OTEL_LOG_TOOL_DETAILS": "1",
                     "OTEL_EXPORTER_OTLP_PROTOCOL": "http/protobuf",
                     "OTEL_EXPORTER_OTLP_ENDPOINT": OTLP_ENDPOINT
                 }
@@ -155,6 +161,7 @@ impl Provider for ClaudeCodeProvider {
                     != Some("1")
                     || env.get("OTEL_METRICS_EXPORTER").and_then(|v| v.as_str()) != Some("otlp")
                     || env.get("OTEL_LOGS_EXPORTER").and_then(|v| v.as_str()) != Some("otlp")
+                    || env.get("OTEL_LOG_TOOL_DETAILS").and_then(|v| v.as_str()) != Some("1")
                     || env
                         .get("OTEL_EXPORTER_OTLP_ENDPOINT")
                         .and_then(|v| v.as_str())
@@ -172,6 +179,7 @@ impl Provider for ClaudeCodeProvider {
             env["CLAUDE_CODE_ENABLE_TELEMETRY"] = serde_json::Value::String("1".to_string());
             env["OTEL_METRICS_EXPORTER"] = serde_json::Value::String("otlp".to_string());
             env["OTEL_LOGS_EXPORTER"] = serde_json::Value::String("otlp".to_string());
+            env["OTEL_LOG_TOOL_DETAILS"] = serde_json::Value::String("1".to_string());
             env["OTEL_EXPORTER_OTLP_PROTOCOL"] =
                 serde_json::Value::String("http/protobuf".to_string());
             env["OTEL_EXPORTER_OTLP_ENDPOINT"] =
