@@ -106,11 +106,10 @@ pub fn scan(
             .as_deref()
             .and_then(context_window_for);
         let context_percent = context_window.and_then(|w| {
-            if w == 0 {
+            if w == 0 || summary.latest_context_tokens == 0 {
                 None
             } else {
-                let used = summary.input_tokens + summary.cache_read_tokens;
-                Some((used as f64 / w as f64).clamp(0.0, 1.0))
+                Some((summary.latest_context_tokens as f64 / w as f64).clamp(0.0, 1.0))
             }
         });
 
@@ -158,10 +157,17 @@ pub fn scan(
 /// offset map.
 #[derive(Default)]
 pub(crate) struct TranscriptSummary {
+    /// Cumulative tokens across **all** assistant turns. Represents lifetime
+    /// consumption — useful for the "TOKENS" column but NOT for context%,
+    /// because each turn's `input_tokens` already contains the full prior
+    /// history (Claude is stateless), so summing inflates by ~N turns.
     pub input_tokens: u64,
     pub output_tokens: u64,
     pub cache_read_tokens: u64,
     pub cache_creation_tokens: u64,
+    /// The *most recent* assistant turn's input + cache_read. This is the
+    /// actual current context-window occupancy (drops when compaction fires).
+    pub latest_context_tokens: u64,
     pub last_model: Option<String>,
     pub current_task: String,
     pub last_line_kind: LastLineKind,
@@ -238,24 +244,37 @@ pub(crate) fn parse_transcript(
                     summary.last_model = Some(model.to_string());
                 }
 
-                // Token usage (cumulative for the session).
+                // Token usage. We track BOTH:
+                //   - cumulative totals (sum across all turns) → lifetime spend
+                //   - the latest turn's input + cache_read → current context %
                 if let Some(usage) = message.and_then(|m| m.get("usage")) {
-                    summary.input_tokens += usage
+                    let turn_input = usage
                         .get("input_tokens")
                         .and_then(|v| v.as_u64())
                         .unwrap_or(0);
-                    summary.output_tokens += usage
+                    let turn_output = usage
                         .get("output_tokens")
                         .and_then(|v| v.as_u64())
                         .unwrap_or(0);
-                    summary.cache_read_tokens += usage
+                    let turn_cache_read = usage
                         .get("cache_read_input_tokens")
                         .and_then(|v| v.as_u64())
                         .unwrap_or(0);
-                    summary.cache_creation_tokens += usage
+                    let turn_cache_create = usage
                         .get("cache_creation_input_tokens")
                         .and_then(|v| v.as_u64())
                         .unwrap_or(0);
+
+                    summary.input_tokens += turn_input;
+                    summary.output_tokens += turn_output;
+                    summary.cache_read_tokens += turn_cache_read;
+                    summary.cache_creation_tokens += turn_cache_create;
+
+                    // Overwrite — only the latest turn matters for context%.
+                    // Excludes cache_creation to match abtop's logic (avoids
+                    // spikes on compaction turns where new cache is being
+                    // written).
+                    summary.latest_context_tokens = turn_input + turn_cache_read;
                 }
 
                 // Walk content blocks for the most recent tool_use.
@@ -417,7 +436,7 @@ mod tests {
     }
 
     #[test]
-    fn parse_transcript_sums_usage_across_turns() {
+    fn parse_transcript_tracks_cumulative_and_latest_separately() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("t.jsonl");
         let mut f = fs::File::create(&path).unwrap();
@@ -439,14 +458,42 @@ mod tests {
 
         let mut offsets = HashMap::new();
         let s = parse_transcript(&path, &mut offsets);
+        // Cumulative across both turns (lifetime totals).
         assert_eq!(s.input_tokens, 220);
         assert_eq!(s.output_tokens, 130);
         assert_eq!(s.cache_read_tokens, 500);
         assert_eq!(s.cache_creation_tokens, 10);
+        // Latest turn only — used for context% (120 + 300 = 420).
+        assert_eq!(s.latest_context_tokens, 420);
         assert_eq!(s.last_model.as_deref(), Some("claude-opus-4-5"));
         assert_eq!(s.current_task, "Edit src/main.rs");
         assert_eq!(s.last_line_kind, LastLineKind::AssistantWithPendingTool);
         assert_eq!(offsets.get(&path).copied(), Some(fs::metadata(&path).unwrap().len()));
+    }
+
+    #[test]
+    fn latest_context_drops_after_compaction() {
+        // Simulates a compaction event: input_tokens drops from a large prior
+        // turn to a small new turn. context% should follow the drop.
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("t.jsonl");
+        let mut f = fs::File::create(&path).unwrap();
+        writeln!(
+            f,
+            r#"{{"type":"assistant","message":{{"model":"sonnet","usage":{{"input_tokens":150000,"output_tokens":500,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}}}}"#
+        )
+        .unwrap();
+        writeln!(
+            f,
+            r#"{{"type":"assistant","message":{{"model":"sonnet","usage":{{"input_tokens":8000,"output_tokens":100,"cache_read_input_tokens":2000,"cache_creation_input_tokens":0}}}}}}"#
+        )
+        .unwrap();
+        let mut offsets = HashMap::new();
+        let s = parse_transcript(&path, &mut offsets);
+        // Cumulative still high (lifetime spend).
+        assert_eq!(s.input_tokens, 158_000);
+        // But latest context = just the post-compaction turn.
+        assert_eq!(s.latest_context_tokens, 10_000);
     }
 
     #[test]
