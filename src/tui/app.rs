@@ -226,7 +226,7 @@ impl App {
 
         // Convert to sorted vector (by event_count descending)
         let mut projects: Vec<ProjectInfo> = project_aggregates.into_values().collect();
-        projects.sort_by(|a, b| b.event_count.cmp(&a.event_count));
+        projects.sort_by_key(|p| std::cmp::Reverse(p.event_count));
         self.detected_projects = projects;
 
         self.compaction_stats = self

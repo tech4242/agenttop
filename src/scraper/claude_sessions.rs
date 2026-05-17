@@ -99,7 +99,7 @@ pub fn scan(
             }
         }
         // Sort children by RSS desc so the biggest is first.
-        children.sort_by(|a, b| b.mem_kb.cmp(&a.mem_kb));
+        children.sort_by_key(|c| std::cmp::Reverse(c.mem_kb));
 
         // Window detection: opus has both 200k and 1M variants, but the
         // transcript's model id usually doesn't say which one (the 1M variant
