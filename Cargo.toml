@@ -63,3 +63,5 @@ codegen-units = 1
 
 [dev-dependencies]
 tempfile = "3.24.0"
+# Drives the axum router directly in tests without binding a TCP socket.
+tower = { version = "0.5", features = ["util"] }
