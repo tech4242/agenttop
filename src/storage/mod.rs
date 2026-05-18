@@ -993,7 +993,12 @@ impl Storage {
         Ok(stats)
     }
 
-    /// Get distinct sessions from OTLP telemetry
+    /// Get distinct sessions from OTLP telemetry.
+    ///
+    /// IMPORTANT: the JSON path must quote `"session.id"` because the
+    /// stored attribute key contains a literal dot. Unquoted `$.session.id`
+    /// is interpreted by DuckDB as a path traversal (`session` → `id`)
+    /// and always returns NULL against real attribute payloads.
     fn get_distinct_sessions(&self, since: Option<DateTime<Utc>>) -> Result<Vec<SessionInfo>> {
         let time_clause = since
             .map(|dt| format!("WHERE timestamp >= '{}'", dt.to_rfc3339()))
@@ -1002,14 +1007,14 @@ impl Storage {
         let query = format!(
             r#"
             SELECT
-                json_extract_string(attributes, '$.session.id') as session_id,
+                json_extract_string(attributes, '$."session.id"') as session_id,
                 COUNT(*) as event_count,
                 CAST(MIN(timestamp) AS VARCHAR) as first_seen,
                 CAST(MAX(timestamp) AS VARCHAR) as last_seen
             FROM log_events
             {time_clause}
             {}
-            json_extract_string(attributes, '$.session.id') IS NOT NULL
+            json_extract_string(attributes, '$."session.id"') IS NOT NULL
             GROUP BY session_id
             ORDER BY event_count DESC
             "#,
