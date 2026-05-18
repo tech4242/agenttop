@@ -565,7 +565,10 @@ fn test_approval_rate_from_real_event_shape() {
         .find(|m| m.tool_name == "Bash")
         .expect("Bash metrics present");
     assert_eq!(bash.call_count, 3, "Bash executed 3 times");
-    assert_eq!(bash.approved_count, 3, "Bash had 3 accepts via tool_decision");
+    assert_eq!(
+        bash.approved_count, 3,
+        "Bash had 3 accepts via tool_decision"
+    );
     assert_eq!(
         bash.rejected_count, 1,
         "Bash had 1 reject — must come from tool_decision because rejects have no tool_result"
