@@ -26,21 +26,7 @@
 
 A terminal-native observability dashboard for AI coding agents. Real-time visibility into tool usage, token consumption, and productivity metrics.
 
-```
-┌─ agenttop ────────────── Project: myapp  Agent: Claude Code  Active: 1h 47m ─┐
-│ Tokens  In: 89K  Out: 42K  Cache: 25K (94% reuse)  Session Total: 156K       │
-├──────────────────────────────────────────────────────────────────────────────┤
-│ API: 47 calls │ 1.2s avg │ 2 errors                                          │
-├──────────────────────────────────────────────────────────────────────────────┤
-│ TOOL         CALLS  ERR  APR%   AVG      RANGE        LAST   FREQ            │
-│ ▶ Read         89    0  100%    12ms    5ms-45ms      5s    ██████████░░     │
-│   Bash         47    1   98%   234ms    50ms-2.1s     2s    █████░░░░░░░     │
-│   Edit         34    2   94%    45ms   10ms-200ms    10s    ████░░░░░░░░     │
-├──────────────────────────────────────────────────────────────────────────────┤
-│ MCP Tools                                                                    │
-│   context7:*   15    1   93%   345ms  100ms-800ms    20s    ██████████░░     │
-└───── [q]uit [s]ort [p]ause [d]etail [t]ime [r] project [a]gent ──────────────┘
-```
+<img src="./docs/preview.png" />
 
 ## Origin Story
 
@@ -110,11 +96,13 @@ in all Claude Code versions. APR% may show as 100% when data is unavailable.
 - **Project Filtering** - Auto-detects project from file paths, filter with `[r]`
 - **Compaction Tracking** - Header shows compaction event count and last `pre→post` token delta (Claude Code 2026+)
 - **Token Tracking** - Input, output, and cache token metrics
-- **Tool Table** - Real-time tool call metrics with:
+- **Unified Tool Table** - Built-in and MCP tools in one sortable table with a `TYPE` column (`builtin` / `mcp`). MCP tools shown as `server:tool` (e.g. `context7:resolve-library-id`). Per-tool:
   - Call count and error count
+  - Approval rate (`APR%`)
   - Time since last call
   - Average duration and duration range
   - Relative frequency bar
+- **Focus Switching** - `[Tab]` cycles focus between the Live sessions panel and the Tools table; `j/k`/arrows navigate whichever is focused
 - **API Metrics** - API calls, latency, active time
 - **Productivity Metrics** - Lines of code, commits
 - **Cache Reuse Rate** - Prompt caching efficiency
@@ -190,8 +178,9 @@ That's it! agenttop automatically:
 | `t` | Cycle time filter |
 | `r` | Cycle project filter |
 | `a` | Cycle through detected agents |
-| `↑`/`k` | Select previous |
-| `↓`/`j` | Select next |
+| `Tab` | Switch focus between Live sessions and Tools |
+| `↑`/`k` | Select previous (in focused panel) |
+| `↓`/`j` | Select next (in focused panel) |
 | `Esc` | Close detail view |
 
 ## Configuration
@@ -314,8 +303,10 @@ Local FS / process tree                         │ Ratatui TUI
         └── sysinfo (CPU / MEM / load / RSS) ──►│
 ```
 
-The scraper runs every refresh tick (~100 ms) but defers expensive ops like
-port enumeration to a slow cycle (~5 s).
+Refresh cadence is tiered to keep the UI responsive while avoiding I/O
+storms: host vitals (CPU / MEM / load) sample every ~100 ms, heavier work
+(process tree, transcript parsing, rate-limit sidecar, subagents) runs
+once per second, and the slowest cycle (lsof for ports) is every ~10 s.
 
 ### Metrics Collected
 
