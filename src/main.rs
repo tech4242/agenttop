@@ -15,11 +15,7 @@ use crate::providers::PROVIDER_REGISTRY;
 use crate::storage::StorageHandle;
 
 #[derive(Parser)]
-#[command(
-    name = "agenttop",
-    about = "htop for AI coding agents",
-    version
-)]
+#[command(name = "agenttop", about = "htop for AI coding agents", version)]
 struct Args {
     /// Run in headless mode (no TUI, OTLP receiver only)
     #[arg(short = 'H', long)]
