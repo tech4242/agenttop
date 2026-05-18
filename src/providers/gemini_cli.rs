@@ -3,7 +3,7 @@
 use super::{Provider, TOKEN_INPUT, TOKEN_OUTPUT};
 use anyhow::{Context, Result};
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 const OTLP_ENDPOINT: &str = "http://localhost:4318";
 
@@ -102,14 +102,20 @@ impl Provider for GeminiCliProvider {
         let settings_path = self
             .settings_path()
             .ok_or_else(|| anyhow::anyhow!("Could not determine home directory"))?;
+        self.ensure_configured_at(&settings_path)
+    }
+}
 
+impl GeminiCliProvider {
+    /// Testable variant that takes the settings.json path explicitly instead
+    /// of resolving it via `dirs::home_dir()`. Production callers should use
+    /// the trait method `ensure_configured` which delegates here.
+    pub fn ensure_configured_at(&self, settings_path: &Path) -> Result<bool> {
         if !settings_path.exists() {
-            // Create directory if needed
             if let Some(parent) = settings_path.parent() {
                 fs::create_dir_all(parent)?;
             }
 
-            // Create new settings file with OTEL enabled
             let settings = serde_json::json!({
                 "telemetry": {
                     "enabled": true,
@@ -119,7 +125,7 @@ impl Provider for GeminiCliProvider {
                 }
             });
 
-            fs::write(&settings_path, serde_json::to_string_pretty(&settings)?)?;
+            fs::write(settings_path, serde_json::to_string_pretty(&settings)?)?;
             tracing::info!(
                 "Created Gemini CLI settings with OTEL enabled at {:?}",
                 settings_path
@@ -127,16 +133,11 @@ impl Provider for GeminiCliProvider {
             return Ok(true);
         }
 
-        // Read existing settings
         let content =
-            fs::read_to_string(&settings_path).context("Failed to read Gemini settings")?;
-
+            fs::read_to_string(settings_path).context("Failed to read Gemini settings")?;
         let mut settings: serde_json::Value =
             serde_json::from_str(&content).context("Failed to parse Gemini settings")?;
 
-        let mut modified = false;
-
-        // Check if telemetry block exists and has correct settings
         let telemetry = settings.get("telemetry");
         let needs_update = match telemetry {
             None => true,
@@ -147,30 +148,24 @@ impl Provider for GeminiCliProvider {
             }
         };
 
-        if needs_update {
-            settings["telemetry"] = serde_json::json!({
-                "enabled": true,
-                "target": "local",
-                "otlpEndpoint": OTLP_ENDPOINT,
-                "otlpProtocol": "http"
-            });
-            modified = true;
+        if !needs_update {
+            tracing::debug!("Gemini CLI OTEL already configured correctly");
+            return Ok(false);
         }
 
-        if modified {
-            // Backup existing settings
-            let backup_path = settings_path.with_extension("json.bak");
-            fs::copy(&settings_path, &backup_path)?;
-            tracing::info!("Backed up settings to {:?}", backup_path);
+        let backup_path = settings_path.with_extension("json.bak");
+        fs::copy(settings_path, &backup_path)?;
+        tracing::info!("Backed up settings to {:?}", backup_path);
 
-            // Write updated settings
-            fs::write(&settings_path, serde_json::to_string_pretty(&settings)?)?;
-            tracing::info!("Updated Gemini CLI settings with OTEL configuration");
-            return Ok(true);
-        }
-
-        tracing::debug!("Gemini CLI OTEL already configured correctly");
-        Ok(false)
+        settings["telemetry"] = serde_json::json!({
+            "enabled": true,
+            "target": "local",
+            "otlpEndpoint": OTLP_ENDPOINT,
+            "otlpProtocol": "http"
+        });
+        fs::write(settings_path, serde_json::to_string_pretty(&settings)?)?;
+        tracing::info!("Updated Gemini CLI settings with OTEL configuration");
+        Ok(true)
     }
 }
 
