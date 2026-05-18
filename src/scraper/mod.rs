@@ -284,7 +284,6 @@ impl Scraper {
     }
 
     fn detect_orphan_ports(&mut self, live_sessions: &[LiveSession]) -> Vec<OrphanPort> {
-        // Build set of live child PIDs and the session they belong to.
         let mut live_session_ids = std::collections::HashSet::new();
         for s in live_sessions {
             live_session_ids.insert(s.session_id.clone());
@@ -298,27 +297,153 @@ impl Scraper {
             }
         }
 
-        // An orphan = a tracked port-holder whose original session_id is no
-        // longer in the live set, and whose PID is still alive.
-        let mut orphans = Vec::new();
-        let mut to_remove = Vec::new();
-        for (&pid, (port, command, origin)) in &self.tracked_port_children {
-            if !self.sys.is_alive(pid) {
-                to_remove.push(pid);
-                continue;
-            }
-            if !live_session_ids.contains(origin) {
-                orphans.push(OrphanPort {
-                    port: *port,
-                    pid,
-                    command: command.clone(),
-                    origin_session_id: origin.clone(),
-                });
-            }
-        }
+        let (orphans, to_remove) =
+            compute_orphans_and_evictions(&self.tracked_port_children, &live_session_ids, |pid| {
+                self.sys.is_alive(pid)
+            });
         for pid in to_remove {
             self.tracked_port_children.remove(&pid);
         }
         orphans
+    }
+}
+
+/// Pure helper for orphan-port detection. Takes the tracked map, the set of
+/// session ids currently alive, and a function that reports whether a given
+/// PID is still alive. Returns (orphans, pids-to-evict-from-tracked).
+///
+/// Extracted so tests can drive it without instantiating a real
+/// `ProcessScanner` (which depends on live sysinfo state).
+fn compute_orphans_and_evictions(
+    tracked: &HashMap<u32, (u16, String, String)>,
+    live_session_ids: &std::collections::HashSet<String>,
+    is_pid_alive: impl Fn(u32) -> bool,
+) -> (Vec<OrphanPort>, Vec<u32>) {
+    let mut orphans = Vec::new();
+    let mut to_remove = Vec::new();
+    for (&pid, (port, command, origin)) in tracked {
+        if !is_pid_alive(pid) {
+            to_remove.push(pid);
+            continue;
+        }
+        if !live_session_ids.contains(origin) {
+            orphans.push(OrphanPort {
+                port: *port,
+                pid,
+                command: command.clone(),
+                origin_session_id: origin.clone(),
+            });
+        }
+    }
+    (orphans, to_remove)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashSet;
+
+    fn tracked_entry(
+        pid: u32,
+        port: u16,
+        command: &str,
+        origin: &str,
+    ) -> (u32, (u16, String, String)) {
+        (pid, (port, command.to_string(), origin.to_string()))
+    }
+
+    #[test]
+    fn rate_limit_info_is_at_limit_handles_boundaries() {
+        let none = RateLimitInfo::default();
+        assert!(!none.is_at_limit(), "no data → not at limit");
+
+        let under = RateLimitInfo {
+            five_hour_pct: Some(98.9),
+            ..Default::default()
+        };
+        assert!(!under.is_at_limit(), "98.9% is not at limit");
+
+        let at = RateLimitInfo {
+            five_hour_pct: Some(99.0),
+            ..Default::default()
+        };
+        assert!(at.is_at_limit(), "exactly 99% triggers");
+
+        let over = RateLimitInfo {
+            seven_day_pct: Some(100.0),
+            ..Default::default()
+        };
+        assert!(over.is_at_limit(), "7d limit also counts");
+    }
+
+    #[test]
+    fn session_status_label_round_trips() {
+        // Lock down the user-visible strings.
+        assert_eq!(SessionStatus::Thinking.label(), "Thinking");
+        assert_eq!(SessionStatus::Executing.label(), "Executing");
+        assert_eq!(SessionStatus::Waiting.label(), "Waiting");
+        assert_eq!(SessionStatus::RateLimited.label(), "RateLimited");
+        assert_eq!(SessionStatus::Done.label(), "Done");
+    }
+
+    #[test]
+    fn compute_orphans_finds_port_with_dead_parent() {
+        let tracked: HashMap<u32, (u16, String, String)> = [
+            tracked_entry(100, 8000, "python", "session-A"),
+            tracked_entry(101, 8001, "node", "session-B"),
+        ]
+        .into_iter()
+        .collect();
+
+        // Only session-B is currently alive. PIDs 100 and 101 are both alive.
+        let live: HashSet<String> = ["session-B".to_string()].into_iter().collect();
+        let (orphans, evict) = compute_orphans_and_evictions(&tracked, &live, |_pid| true);
+
+        assert_eq!(orphans.len(), 1);
+        assert_eq!(orphans[0].port, 8000);
+        assert_eq!(orphans[0].pid, 100);
+        assert_eq!(orphans[0].origin_session_id, "session-A");
+        assert!(evict.is_empty(), "no PID died, nothing to evict");
+    }
+
+    #[test]
+    fn compute_orphans_evicts_dead_pids() {
+        let tracked: HashMap<u32, (u16, String, String)> =
+            [tracked_entry(200, 9000, "python", "session-X")]
+                .into_iter()
+                .collect();
+        let live: HashSet<String> = HashSet::new();
+
+        // PID 200 is dead.
+        let (orphans, evict) = compute_orphans_and_evictions(&tracked, &live, |pid| pid != 200);
+
+        assert!(orphans.is_empty(), "dead PID is not an orphan — it's gone");
+        assert_eq!(evict, vec![200], "must mark dead PID for eviction");
+    }
+
+    #[test]
+    fn compute_orphans_skips_live_sessions() {
+        let tracked: HashMap<u32, (u16, String, String)> =
+            [tracked_entry(300, 7000, "ruby", "session-active")]
+                .into_iter()
+                .collect();
+        let live: HashSet<String> = ["session-active".to_string()].into_iter().collect();
+
+        let (orphans, evict) = compute_orphans_and_evictions(&tracked, &live, |_pid| true);
+        assert!(
+            orphans.is_empty(),
+            "port belongs to a live session, not orphan"
+        );
+        assert!(evict.is_empty());
+    }
+
+    #[test]
+    fn rate_limit_only_seven_day_at_limit() {
+        let rl = RateLimitInfo {
+            five_hour_pct: Some(0.0),
+            seven_day_pct: Some(99.5),
+            ..Default::default()
+        };
+        assert!(rl.is_at_limit());
     }
 }
