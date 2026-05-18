@@ -490,6 +490,123 @@ fn test_multiple_tool_events() {
     assert_eq!(write_metrics.error_count, 1);
 }
 
+/// Round-trip realistic Claude Code shaped events through storage and
+/// verify approval counts surface in `ToolMetrics`. This is the regression
+/// guard for the bug where the SQL was querying `$.decision` on
+/// `tool_result` (always NULL) — real Claude Code emits `decision_type`
+/// on `tool_result` for accepts and a separate `tool_decision` event
+/// (with `decision` attribute) for both accepts and rejects.
+#[test]
+fn test_approval_rate_from_real_event_shape() {
+    use agenttop::storage::{LogEvent, StorageHandle};
+
+    let storage = StorageHandle::new_in_memory().unwrap();
+
+    // Helper to build a tool_result event with decision_type=accept.
+    let result_event = |tool: &str, tool_use_id: &str| {
+        let mut attrs = HashMap::new();
+        attrs.insert("tool_name".to_string(), tool.to_string());
+        attrs.insert("success".to_string(), "true".to_string());
+        attrs.insert("duration_ms".to_string(), "100".to_string());
+        attrs.insert("decision_type".to_string(), "accept".to_string());
+        attrs.insert("tool_use_id".to_string(), tool_use_id.to_string());
+        LogEvent {
+            timestamp: Utc::now(),
+            event_name: Some("tool_result".to_string()),
+            body: None,
+            attributes: attrs,
+        }
+    };
+
+    // Helper to build a tool_decision event.
+    let decision_event = |tool: &str, decision: &str, tool_use_id: &str| {
+        let mut attrs = HashMap::new();
+        attrs.insert("tool_name".to_string(), tool.to_string());
+        attrs.insert("decision".to_string(), decision.to_string());
+        attrs.insert("tool_use_id".to_string(), tool_use_id.to_string());
+        LogEvent {
+            timestamp: Utc::now(),
+            event_name: Some("tool_decision".to_string()),
+            body: None,
+            attributes: attrs,
+        }
+    };
+
+    // Scenario:
+    //   Bash: 3 accepts (3 tool_result + 3 tool_decision) + 1 reject
+    //         (tool_decision only, no tool_result — the rejected one never executed).
+    //   mcp__context7__resolve-library-id: 2 accepts (full name on tool_result,
+    //         tool_decision uses "mcp_tool" → reconciled via tool_use_id).
+    //   Read: 1 accept, no tool_decision event (auto-approved variant).
+    storage.record_log_events(vec![
+        // Bash accepts
+        result_event("Bash", "bash-1"),
+        decision_event("Bash", "accept", "bash-1"),
+        result_event("Bash", "bash-2"),
+        decision_event("Bash", "accept", "bash-2"),
+        result_event("Bash", "bash-3"),
+        decision_event("Bash", "accept", "bash-3"),
+        // Bash reject — no tool_result, only tool_decision
+        decision_event("Bash", "reject", "bash-rejected-99"),
+        // MCP: tool_result has full name, tool_decision has "mcp_tool"
+        result_event("mcp__context7__resolve-library-id", "mcp-1"),
+        decision_event("mcp_tool", "accept", "mcp-1"),
+        result_event("mcp__context7__resolve-library-id", "mcp-2"),
+        decision_event("mcp_tool", "accept", "mcp-2"),
+        // Read auto-approved, no tool_decision
+        result_event("Read", "read-1"),
+    ]);
+    std::thread::sleep(std::time::Duration::from_millis(150));
+
+    let metrics = storage.get_tool_metrics(None).unwrap();
+
+    let bash = metrics
+        .iter()
+        .find(|m| m.tool_name == "Bash")
+        .expect("Bash metrics present");
+    assert_eq!(bash.call_count, 3, "Bash executed 3 times");
+    assert_eq!(bash.approved_count, 3, "Bash had 3 accepts via tool_decision");
+    assert_eq!(
+        bash.rejected_count, 1,
+        "Bash had 1 reject — must come from tool_decision because rejects have no tool_result"
+    );
+    // Approval rate: 3 / (3 + 1) = 75%
+    assert!(
+        (bash.approval_rate() - 75.0).abs() < 0.5,
+        "Bash approval rate should be 75%, got {}",
+        bash.approval_rate()
+    );
+
+    let mcp = metrics
+        .iter()
+        .find(|m| m.tool_name == "mcp__context7__resolve-library-id")
+        .expect(
+            "MCP tool present under full name (reconciled via tool_use_id, NOT under 'mcp_tool')",
+        );
+    assert_eq!(mcp.call_count, 2);
+    assert_eq!(
+        mcp.approved_count, 2,
+        "MCP accepts must be credited to the proper name via tool_use_id join"
+    );
+    assert_eq!(mcp.rejected_count, 0);
+
+    // No phantom "mcp_tool" row from the tool_decision side leaking through.
+    assert!(
+        !metrics.iter().any(|m| m.tool_name == "mcp_tool"),
+        "raw 'mcp_tool' name should be resolved away when a matching tool_result exists"
+    );
+
+    let read = metrics
+        .iter()
+        .find(|m| m.tool_name == "Read")
+        .expect("Read metrics present");
+    assert_eq!(read.call_count, 1);
+    assert_eq!(read.approved_count, 0, "no tool_decision events for Read");
+    assert_eq!(read.rejected_count, 0);
+    // approval_rate() falls back to 100% when both counts are 0 (no data).
+    assert!((read.approval_rate() - 100.0).abs() < 0.5);
+}
+
 /// Test recording token usage
 #[test]
 fn test_token_usage_recording() {

@@ -589,29 +589,27 @@ impl Storage {
     }
 
     fn get_tool_metrics(&self, since: Option<DateTime<Utc>>) -> Result<Vec<ToolMetrics>> {
-        // Query that combines both legacy tool_events and new log_events tables
-        // The log_events query filters by event_name at query time (not ingestion)
-        // This matches both "tool_result" and "claude_code.tool_result"
+        // Combines legacy `tool_events` with the modern `log_events` path.
+        //
+        // Decision attribution requires two separate event streams from
+        // Claude Code:
+        //   - `tool_result` carries `decision_type` (the accepted run that
+        //     actually executed). Values seen in real telemetry: `accept`.
+        //   - `tool_decision` carries `decision` (BOTH accepts and rejects;
+        //     rejected tool calls never reach `tool_result` at all). Values:
+        //     `accept`, `reject`.
+        // We attribute via `tool_use_id` so MCP rejections — where
+        // `tool_decision.tool_name == "mcp_tool"` — still get credited to
+        // the actual `mcp__server__tool` name from the matching
+        // `tool_result`. When no match exists (pure reject, no tool_result),
+        // the row counts under whatever name `tool_decision` carried.
         let time_clause = since
             .map(|dt| format!("AND timestamp >= '{}'", dt.to_rfc3339()))
             .unwrap_or_default();
 
         let query = format!(
             r#"
-            WITH combined_events AS (
-                -- Legacy tool_events table (no decision tracking)
-                SELECT
-                    tool_name,
-                    timestamp,
-                    duration_ms,
-                    success,
-                    NULL as decision
-                FROM tool_events
-                WHERE 1=1 {time_clause}
-
-                UNION ALL
-
-                -- New log_events table with query-time filtering
+            WITH tool_results AS (
                 SELECT
                     COALESCE(json_extract_string(attributes, '$.tool_name'), 'unknown') as tool_name,
                     timestamp,
@@ -621,23 +619,59 @@ impl Storage {
                         WHEN json_extract(attributes, '$.success') = true THEN true
                         ELSE false
                     END as success,
-                    json_extract_string(attributes, '$.decision') as decision
+                    json_extract_string(attributes, '$.decision_type') as decision_type,
+                    json_extract_string(attributes, '$.tool_use_id') as tool_use_id
                 FROM log_events
                 WHERE event_name LIKE '%tool_result' {time_clause}
+            ),
+            -- Map tool_use_id -> the real tool name (recovered from tool_result),
+            -- so MCP rejections that fire only `tool_decision` (where tool_name
+            -- collapses to "mcp_tool") get credited to the proper server/tool.
+            tool_decisions AS (
+                SELECT
+                    COALESCE(
+                        (SELECT tr.tool_name FROM tool_results tr
+                            WHERE tr.tool_use_id = json_extract_string(d.attributes, '$.tool_use_id')
+                            LIMIT 1),
+                        json_extract_string(d.attributes, '$.tool_name')
+                    ) as tool_name,
+                    json_extract_string(d.attributes, '$.decision') as decision
+                FROM log_events d
+                WHERE d.event_name = 'tool_decision' {time_clause}
+            ),
+            decision_counts AS (
+                SELECT
+                    tool_name,
+                    SUM(CASE WHEN decision IN ('accept', 'approved', 'auto_approved') THEN 1 ELSE 0 END) as approved,
+                    SUM(CASE WHEN decision IN ('reject', 'rejected') THEN 1 ELSE 0 END) as rejected
+                FROM tool_decisions
+                GROUP BY tool_name
+            ),
+            -- Legacy table: counted toward call_count but has no decision data.
+            legacy_results AS (
+                SELECT tool_name, timestamp, duration_ms, success
+                FROM tool_events
+                WHERE 1=1 {time_clause}
+            ),
+            combined_results AS (
+                SELECT tool_name, timestamp, duration_ms, success FROM legacy_results
+                UNION ALL
+                SELECT tool_name, timestamp, duration_ms, success FROM tool_results
             )
             SELECT
-                tool_name,
+                r.tool_name,
                 COUNT(*) as call_count,
-                CAST(MAX(timestamp) AS VARCHAR) as last_call,
-                AVG(duration_ms) as avg_duration_ms,
-                MIN(duration_ms) as min_duration_ms,
-                MAX(duration_ms) as max_duration_ms,
-                SUM(CASE WHEN success THEN 1 ELSE 0 END) as success_count,
-                SUM(CASE WHEN NOT success THEN 1 ELSE 0 END) as error_count,
-                SUM(CASE WHEN decision IN ('approved', 'auto_approved') THEN 1 ELSE 0 END) as approved_count,
-                SUM(CASE WHEN decision = 'rejected' THEN 1 ELSE 0 END) as rejected_count
-            FROM combined_events
-            GROUP BY tool_name
+                CAST(MAX(r.timestamp) AS VARCHAR) as last_call,
+                AVG(r.duration_ms) as avg_duration_ms,
+                MIN(r.duration_ms) as min_duration_ms,
+                MAX(r.duration_ms) as max_duration_ms,
+                SUM(CASE WHEN r.success THEN 1 ELSE 0 END) as success_count,
+                SUM(CASE WHEN NOT r.success THEN 1 ELSE 0 END) as error_count,
+                COALESCE(MAX(d.approved), 0) as approved_count,
+                COALESCE(MAX(d.rejected), 0) as rejected_count
+            FROM combined_results r
+            LEFT JOIN decision_counts d ON d.tool_name = r.tool_name
+            GROUP BY r.tool_name
             ORDER BY call_count DESC
             "#
         );

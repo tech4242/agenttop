@@ -7,7 +7,12 @@ use std::path::PathBuf;
 
 const OTLP_ENDPOINT: &str = "http://localhost:4318";
 
-/// Built-in Claude Code tools
+/// Built-in Claude Code tools.
+///
+/// Keep this list in sync with the tool names that ship with Claude Code
+/// 2.x. Missing entries cause tools to render as `mcp` in the TUI's TYPE
+/// column, even though they're not MCP. Last verified against real
+/// telemetry on 2026-05-18 (Claude Code 2.1.128).
 const BUILTIN_TOOLS: &[&str] = &[
     "Read",
     "Write",
@@ -29,7 +34,14 @@ const BUILTIN_TOOLS: &[&str] = &[
     "KillShell",
     "EnterPlanMode",
     "ExitPlanMode",
+    "TaskCreate",
+    "TaskUpdate",
     "TaskOutput",
+    "TaskStop",
+    "TaskList",
+    "TaskGet",
+    "ToolSearch",
+    "TestRead",
 ];
 
 /// Claude Code provider
