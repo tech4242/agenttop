@@ -8,8 +8,11 @@
 //! - Token type normalization
 
 pub mod claude_code;
+pub mod cline;
+pub mod copilot_chat;
 pub mod gemini_cli;
 pub mod openai_codex;
+pub mod opencode;
 pub mod qwen_code;
 
 use anyhow::Result;
@@ -51,6 +54,19 @@ pub trait Provider: Send + Sync {
     fn settings_path(&self) -> Option<std::path::PathBuf> {
         None
     }
+
+    /// OTel `service.name` resource attribute this provider emits as.
+    /// Used to detect agents that don't have unique tool names or model patterns
+    /// (Cline, Copilot Chat, opencode).
+    fn service_name(&self) -> Option<&'static str> {
+        None
+    }
+
+    /// Multi-line setup instructions printed by `agenttop --setup <id>` when
+    /// auto-configuration isn't possible (manual config, dashboard-driven, plugin install).
+    fn setup_instructions(&self) -> Option<&'static str> {
+        None
+    }
 }
 
 /// Registry of all known providers
@@ -67,8 +83,19 @@ impl ProviderRegistry {
                 Box::new(openai_codex::OpenAICodexProvider),
                 Box::new(gemini_cli::GeminiCliProvider),
                 Box::new(qwen_code::QwenCodeProvider),
+                Box::new(cline::ClineProvider),
+                Box::new(copilot_chat::CopilotChatProvider),
+                Box::new(opencode::OpenCodeProvider),
             ],
         }
+    }
+
+    /// Look up a provider by its OTel `service.name` resource attribute.
+    pub fn find_by_service_name(&self, service_name: &str) -> Option<&dyn Provider> {
+        self.providers
+            .iter()
+            .find(|p| p.service_name() == Some(service_name))
+            .map(|p| p.as_ref())
     }
 
     /// Get all registered providers
@@ -160,7 +187,35 @@ mod tests {
         assert!(registry.get("openai_codex").is_some());
         assert!(registry.get("gemini_cli").is_some());
         assert!(registry.get("qwen_code").is_some());
+        assert!(registry.get("cline").is_some());
+        assert!(registry.get("copilot_chat").is_some());
+        assert!(registry.get("opencode").is_some());
         assert!(registry.get("unknown").is_none());
+    }
+
+    #[test]
+    fn test_find_by_service_name() {
+        let registry = ProviderRegistry::new();
+
+        assert_eq!(
+            registry.find_by_service_name("claude-code").map(|p| p.id()),
+            Some("claude_code")
+        );
+        assert_eq!(
+            registry.find_by_service_name("cline").map(|p| p.id()),
+            Some("cline")
+        );
+        assert_eq!(
+            registry
+                .find_by_service_name("copilot-chat")
+                .map(|p| p.id()),
+            Some("copilot_chat")
+        );
+        assert_eq!(
+            registry.find_by_service_name("opencode").map(|p| p.id()),
+            Some("opencode")
+        );
+        assert!(registry.find_by_service_name("unknown_service").is_none());
     }
 
     #[test]

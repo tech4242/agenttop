@@ -3,7 +3,7 @@ pub mod ui;
 
 use anyhow::Result;
 use crossterm::{
-    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind},
+    event::{self, Event, KeyCode, KeyEventKind},
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
@@ -18,7 +18,7 @@ pub async fn run(storage: StorageHandle) -> Result<()> {
     // Setup terminal
     enable_raw_mode()?;
     let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
+    execute!(stdout, EnterAlternateScreen)?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
@@ -30,11 +30,7 @@ pub async fn run(storage: StorageHandle) -> Result<()> {
 
     // Restore terminal
     disable_raw_mode()?;
-    execute!(
-        terminal.backend_mut(),
-        LeaveAlternateScreen,
-        DisableMouseCapture
-    )?;
+    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
     terminal.show_cursor()?;
 
     if let Err(err) = res {
@@ -63,8 +59,9 @@ async fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Resul
                 KeyCode::Char('p') => app.toggle_pause(),
                 KeyCode::Char('d') => app.toggle_detail(),
                 KeyCode::Char('t') => app.toggle_time_filter(),
-                KeyCode::Char('r') => app.reset_stats(),
+                KeyCode::Char('r') => app.cycle_project(),
                 KeyCode::Char('a') => app.cycle_agent(),
+                KeyCode::Tab => app.toggle_focus(),
                 KeyCode::Up | KeyCode::Char('k') => app.select_previous(),
                 KeyCode::Down | KeyCode::Char('j') => app.select_next(),
                 KeyCode::Enter => app.toggle_detail(),
