@@ -89,7 +89,7 @@ fn test_sort_by_calls_desc() {
         },
     ];
 
-    tools.sort_by(|a, b| b.call_count.cmp(&a.call_count));
+    tools.sort_by_key(|t| std::cmp::Reverse(t.call_count));
 
     assert_eq!(tools[0].tool_name, "Write");
     assert_eq!(tools[1].tool_name, "Bash");
@@ -126,7 +126,7 @@ fn test_sort_by_calls_asc() {
         },
     ];
 
-    tools.sort_by(|a, b| a.call_count.cmp(&b.call_count));
+    tools.sort_by_key(|t| t.call_count);
 
     assert_eq!(tools[0].tool_name, "Read");
     assert_eq!(tools[1].tool_name, "Bash");
