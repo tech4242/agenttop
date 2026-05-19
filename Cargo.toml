@@ -1,6 +1,6 @@
 [package]
 name = "agenttop"
-version = "0.3.1"
+version = "0.4.0"
 edition = "2024"
 description = "htop for AI coding agents - terminal observability dashboard"
 authors = ["tech4242"]
@@ -47,6 +47,10 @@ regex = "1"
 
 # Process / host vitals scraping (cross-platform)
 sysinfo = "0.33"
+
+# Read opencode's session DB at ~/.local/share/opencode/opencode.db.
+# `bundled` ships sqlite3 statically so users don't need a system sqlite.
+rusqlite = { version = "0.32", features = ["bundled"] }
 
 # Build dependencies for protobuf
 [build-dependencies]

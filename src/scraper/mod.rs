@@ -24,6 +24,7 @@ use std::path::PathBuf;
 
 pub mod claude_sessions;
 pub mod host;
+pub mod opencode_sessions;
 pub mod ports;
 pub mod process;
 pub mod rate_limits;
@@ -246,14 +247,21 @@ impl Scraper {
             self.cached_ports = ports::scan_listening_ports();
         }
 
-        // 3. Scrape live Claude Code sessions (the only agent we can scrape
-        //    directly today — others are OTLP-only).
+        // 3. Scrape live agent sessions from local state.
+        //    Claude Code: ~/.claude transcripts (rich state — status, current_task, ctx%).
+        //    opencode:    ~/.local/share/opencode/opencode.db (tokens + project).
+        //    Other agents (Codex, Gemini, Qwen, Cline, Copilot) flow through OTLP only.
         let mut live_sessions =
             claude_sessions::scan(&self.sys, &self.cached_ports, &mut self.transcript_offsets);
+        live_sessions.extend(opencode_sessions::scan(&self.sys));
 
-        // 4. Enrich with subagents (cheap — only reads files for live sessions).
+        // 4. Enrich Claude Code sessions with subagents (cheap; only reads
+        //    files for live sessions). opencode doesn't have an analogous
+        //    concept.
         for session in &mut live_sessions {
-            session.subagents = subagents::for_session(&session.session_id, &session.cwd);
+            if session.agent_id == "claude_code" {
+                session.subagents = subagents::for_session(&session.session_id, &session.cwd);
+            }
         }
 
         // 5. Rate limits from the Claude StatusLine sidecar file.
