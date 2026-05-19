@@ -45,7 +45,7 @@ If you want to contribute, please let me know!
 | Agent | OTLP Support | Signals | MCP Tools | Key Metrics |
 |-------|--------------|---------|-----------|-------------|
 | **Claude Code** | ✅ Full | Metrics, Logs | Full names (auto-enabled via `OTEL_LOG_TOOL_DETAILS=1`) | tokens, cost, tools, LOC, compaction |
-| **OpenAI Codex CLI** | ⚠️ Partial | Logs, Traces | Full names | tokens, tools, prompts (interactive only — see caveat) |
+| **OpenAI Codex CLI** | ✅ Full (since Feb 2026) | Logs, Traces | Full names | tokens, tools, prompts |
 | **Gemini CLI** | ✅ Full | Metrics, Logs | Full names + `tool_type` | 40+ metrics |
 | **Qwen Code** | ✅ Full | Metrics, Logs | Supported | tokens, diff stats |
 | **Cline** | ✅ Full (Cline Enterprise) | Logs, Metrics | via `use_mcp_tool` | `cline.turns.total`, tool calls |
@@ -59,30 +59,49 @@ If you want to contribute, please let me know!
 ### Some notes on Limitations
 
 #### MCP Tool Names (Claude Code)
-Claude Code 2.1.2+ anonymizes MCP tool names by default. The opt-in env var
-`OTEL_LOG_TOOL_DETAILS=1` makes the per-server names available again — Claude Code
-emits them in `tool_parameters` as `{"mcp_server_name": "...", "mcp_tool_name": "..."}`,
-and agenttop reconstitutes the full `mcp__<server>__<tool>` form so MCP usage
-shows up grouped by server in the TUI. `agenttop --setup claude` writes this
-env var for you.
+Claude Code 2.1.128+ emits full MCP tool names (e.g. `mcp__context7__resolve-library-id`)
+on `tool_result` events natively. The earlier limitation (tracked as
+[anthropic/claude-code#17046](https://github.com/anthropics/claude-code/issues/17046))
+was resolved on 2026-03-25. agenttop still sets `OTEL_LOG_TOOL_DETAILS=1` for
+older versions, and the OTLP parser keeps the `tool_parameters` reconstitution
+path as a fallback.
 
-History: this was tracked as https://github.com/anthropics/claude-code/issues/17046
-(closed Jan 2026).
+`tool_decision` events still emit a generic `tool_name = "mcp_tool"` (separate
+upstream code path). agenttop reconciles decisions back to the correct MCP
+name via `tool_use_id` when computing approval rates, so APR% is accurate per
+MCP server even though the raw decision event isn't.
 
 #### Context Window Usage
-Claude Code still does NOT expose live context window usage in telemetry.
-However, **compaction events** (`event.name = "claude_code.compaction"`) are now
-emitted with `pre_tokens`/`post_tokens`, and agenttop surfaces a count + last
-delta in the header so you can see when compaction kicked in.
+Claude Code's OTLP stream still doesn't carry live context-window usage,
+but agenttop now scrapes it locally from `~/.claude/projects/.../*.jsonl`
+and shows a `used/window` ratio in the **Live sessions** panel. **Compaction
+events** (`event.name = "claude_code.compaction"`) are also tracked and
+surfaced in the header with pre→post token deltas.
 
-#### OpenAI Codex CLI caveat
-As of 2026-Q1, `codex exec` and `codex mcp-server` emit no telemetry — only
-interactive `codex` sessions populate OTLP. See
-https://github.com/openai/codex/issues/12913.
+For the opus 200k-vs-1M variants (the 1M context is selected via API beta
+header and not encoded in the transcript model name), agenttop auto-bumps
+the window to 1M when observed usage exceeds 200k.
+
+#### OpenAI Codex CLI
+Historically `codex exec` and `codex mcp-server` emitted no telemetry
+([openai/codex#12913](https://github.com/openai/codex/issues/12913)) — that
+issue was closed as *completed* on 2026-02-28. We haven't independently
+verified the new behavior end-to-end; if you hit gaps with your specific
+Codex version, please open an issue with a sample event.
 
 #### Approval Rate
-The `decision` attribute for tool approval tracking is not consistently present
-in all Claude Code versions. APR% may show as 100% when data is unavailable.
+Tool approval data is split across two Claude Code event types:
+- `tool_result.decision_type = "accept"` is emitted for every accepted tool
+  call (which is the only kind that actually executes and produces a result).
+- `tool_decision.decision` is emitted for both `accept` and `reject` — and
+  it's the *only* place rejections show up, because rejected tools never
+  fire a `tool_result`.
+
+agenttop combines both streams to compute APR%. Auto-approved tools (Read,
+Glob, Grep, etc.) have no `tool_decision` events at all — those show 100%
+APR by convention. If you see persistent 100% APR for a tool you actually
+get prompted on, your Claude Code version may be on an older telemetry
+schema (please report).
 
 
 ## Features

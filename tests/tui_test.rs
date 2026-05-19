@@ -65,6 +65,92 @@ fn test_app_refresh_loads_data() {
     assert_eq!(read.unwrap().call_count, 2);
 }
 
+/// End-to-end: realistic Claude Code event shapes (tool_result with
+/// `decision_type` + separate `tool_decision` with `decision`) flow through
+/// storage → App.tool_metrics → ToolMetrics.approval_rate() correctly.
+///
+/// Regression guard: the README's "APR% may show as 100% when data is
+/// unavailable" claim was actually wrong — the data IS present, but our SQL
+/// was querying the wrong attribute name. This test fails if anyone
+/// reintroduces that.
+#[test]
+fn test_app_approval_rate_end_to_end() {
+    let storage = StorageHandle::new_in_memory().unwrap();
+
+    let result = |tool: &str, tuid: &str| {
+        let mut a = HashMap::new();
+        a.insert("tool_name".into(), tool.into());
+        a.insert("success".into(), "true".into());
+        a.insert("duration_ms".into(), "100".into());
+        a.insert("decision_type".into(), "accept".into());
+        a.insert("tool_use_id".into(), tuid.into());
+        LogEvent {
+            timestamp: Utc::now(),
+            event_name: Some("tool_result".into()),
+            body: None,
+            attributes: a,
+        }
+    };
+    let decision = |tool: &str, dec: &str, tuid: &str| {
+        let mut a = HashMap::new();
+        a.insert("tool_name".into(), tool.into());
+        a.insert("decision".into(), dec.into());
+        a.insert("tool_use_id".into(), tuid.into());
+        LogEvent {
+            timestamp: Utc::now(),
+            event_name: Some("tool_decision".into()),
+            body: None,
+            attributes: a,
+        }
+    };
+
+    storage.record_log_events(vec![
+        // ExitPlanMode: mostly rejected (mirrors real-world pattern)
+        result("ExitPlanMode", "ep-1"),
+        decision("ExitPlanMode", "accept", "ep-1"),
+        decision("ExitPlanMode", "reject", "ep-r1"),
+        decision("ExitPlanMode", "reject", "ep-r2"),
+        decision("ExitPlanMode", "reject", "ep-r3"),
+        // Bash: nearly all accepted
+        result("Bash", "b-1"),
+        decision("Bash", "accept", "b-1"),
+        result("Bash", "b-2"),
+        decision("Bash", "accept", "b-2"),
+        decision("Bash", "reject", "b-r1"),
+    ]);
+    std::thread::sleep(std::time::Duration::from_millis(150));
+
+    let mut app = App::new(storage);
+    app.refresh().unwrap();
+
+    let exitplan = app
+        .tool_metrics
+        .iter()
+        .find(|t| t.tool_name == "ExitPlanMode")
+        .expect("ExitPlanMode must appear in tool_metrics");
+    assert_eq!(exitplan.approved_count, 1);
+    assert_eq!(exitplan.rejected_count, 3);
+    assert!(
+        (exitplan.approval_rate() - 25.0).abs() < 0.5,
+        "ExitPlanMode approval rate should be 25% (1 accept / 4 total), got {}",
+        exitplan.approval_rate()
+    );
+
+    let bash = app
+        .tool_metrics
+        .iter()
+        .find(|t| t.tool_name == "Bash")
+        .expect("Bash must appear in tool_metrics");
+    assert_eq!(bash.approved_count, 2);
+    assert_eq!(bash.rejected_count, 1);
+    let bash_apr = bash.approval_rate();
+    assert!(
+        (bash_apr - 66.66).abs() < 0.5,
+        "Bash approval rate should be ~67% (2/3), got {}",
+        bash_apr
+    );
+}
+
 /// Test that App correctly computes total tokens
 #[test]
 fn test_app_total_tokens() {

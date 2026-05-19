@@ -74,7 +74,8 @@ fn live_panel_height(app: &App, total_height: u16) -> u16 {
     // Detail strip: 4 lines (chrome + 2 lines of children/subagents) when a
     // live session is selected and the panel is focused.
     let detail_height = if has_sessions { 4 } else { 0 };
-    let quota_height = if has_rate_limits { 3 } else { 0 };
+    // Quota panel needs room for 2 chrome + header + 5h + 7d rows.
+    let quota_height = if has_rate_limits { 5 } else { 0 };
     let orphans_height = if has_orphans { 3 } else { 0 };
 
     let main_row = sessions_height.max(quota_height);

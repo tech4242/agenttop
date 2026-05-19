@@ -3,7 +3,7 @@
 use super::{Provider, TOKEN_INPUT, TOKEN_OUTPUT};
 use anyhow::{Context, Result};
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 const OTLP_ENDPOINT: &str = "http://localhost:4318";
 
@@ -53,7 +53,24 @@ impl Provider for CopilotChatProvider {
         let Some(settings_path) = self.settings_path() else {
             return Ok(false);
         };
+        self.ensure_configured_at(&settings_path)
+    }
 
+    fn setup_instructions(&self) -> Option<&'static str> {
+        Some(
+            "Copilot Chat reads OTLP config from VSCode settings.json. agenttop\n\
+             auto-writes the keys with `agenttop --setup copilot`; reload VSCode\n\
+             after running it. If captured prompt/response content is desired, also\n\
+             set \"github.copilot.chat.otel.captureContent\": true (opt-in).",
+        )
+    }
+}
+
+impl CopilotChatProvider {
+    /// Testable variant — see GeminiCliProvider for the rationale. Returns
+    /// `Ok(false)` when the VSCode settings.json doesn't exist (Copilot Chat
+    /// needs to have been launched at least once to create the file).
+    pub fn ensure_configured_at(&self, settings_path: &Path) -> Result<bool> {
         if !settings_path.exists() {
             tracing::warn!(
                 "VSCode settings.json not found at {:?}; install VSCode and run Copilot Chat at least once before configuring",
@@ -63,7 +80,7 @@ impl Provider for CopilotChatProvider {
         }
 
         let content =
-            fs::read_to_string(&settings_path).context("Failed to read VSCode settings.json")?;
+            fs::read_to_string(settings_path).context("Failed to read VSCode settings.json")?;
         let mut settings: serde_json::Value = serde_json::from_str(&content)
             .context("Failed to parse VSCode settings.json (may contain trailing commas; edit manually if so)")?;
 
@@ -80,7 +97,7 @@ impl Provider for CopilotChatProvider {
         }
 
         let backup_path = settings_path.with_extension("json.bak");
-        fs::copy(&settings_path, &backup_path)?;
+        fs::copy(settings_path, &backup_path)?;
         tracing::info!("Backed up VSCode settings to {:?}", backup_path);
 
         if let Some(obj) = settings.as_object_mut() {
@@ -94,21 +111,12 @@ impl Provider for CopilotChatProvider {
             );
         }
 
-        fs::write(&settings_path, serde_json::to_string_pretty(&settings)?)?;
+        fs::write(settings_path, serde_json::to_string_pretty(&settings)?)?;
         tracing::info!(
             "Updated VSCode settings.json with Copilot Chat OTLP at {:?}",
             settings_path
         );
         Ok(true)
-    }
-
-    fn setup_instructions(&self) -> Option<&'static str> {
-        Some(
-            "Copilot Chat reads OTLP config from VSCode settings.json. agenttop\n\
-             auto-writes the keys with `agenttop --setup copilot`; reload VSCode\n\
-             after running it. If captured prompt/response content is desired, also\n\
-             set \"github.copilot.chat.otel.captureContent\": true (opt-in).",
-        )
     }
 }
 

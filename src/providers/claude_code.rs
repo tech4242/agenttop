@@ -3,11 +3,16 @@
 use super::{Provider, TOKEN_CACHE_READ, TOKEN_CACHE_WRITE, TOKEN_INPUT, TOKEN_OUTPUT};
 use anyhow::{Context, Result};
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 const OTLP_ENDPOINT: &str = "http://localhost:4318";
 
-/// Built-in Claude Code tools
+/// Built-in Claude Code tools.
+///
+/// Keep this list in sync with the tool names that ship with Claude Code
+/// 2.x. Missing entries cause tools to render as `mcp` in the TUI's TYPE
+/// column, even though they're not MCP. Last verified against real
+/// telemetry on 2026-05-18 (Claude Code 2.1.128).
 const BUILTIN_TOOLS: &[&str] = &[
     "Read",
     "Write",
@@ -29,7 +34,14 @@ const BUILTIN_TOOLS: &[&str] = &[
     "KillShell",
     "EnterPlanMode",
     "ExitPlanMode",
+    "TaskCreate",
+    "TaskUpdate",
     "TaskOutput",
+    "TaskStop",
+    "TaskList",
+    "TaskGet",
+    "ToolSearch",
+    "TestRead",
 ];
 
 /// Claude Code provider
@@ -107,15 +119,22 @@ impl Provider for ClaudeCodeProvider {
         let settings_path = self
             .settings_path()
             .ok_or_else(|| anyhow::anyhow!("Could not determine home directory"))?;
+        self.ensure_configured_at(&settings_path)
+    }
+}
 
+impl ClaudeCodeProvider {
+    /// Testable variant that takes the settings.json path explicitly.
+    /// Production callers should use the trait method `ensure_configured`.
+    pub fn ensure_configured_at(&self, settings_path: &Path) -> Result<bool> {
         if !settings_path.exists() {
-            // Create directory if needed
             if let Some(parent) = settings_path.parent() {
                 fs::create_dir_all(parent)?;
             }
 
-            // Create new settings file with OTEL enabled via env block.
-            // OTEL_LOG_TOOL_DETAILS=1 opts in to per-MCP-server tool names (Claude Code 2.1.2+).
+            // OTEL_LOG_TOOL_DETAILS=1 opts in to per-MCP-server tool names
+            // (Claude Code 2.1.2+; the upstream fix lands proper names in
+            // tool_result.tool_name natively as of 2.1.128).
             let settings = serde_json::json!({
                 "enableTelemetry": true,
                 "env": {
@@ -128,7 +147,7 @@ impl Provider for ClaudeCodeProvider {
                 }
             });
 
-            fs::write(&settings_path, serde_json::to_string_pretty(&settings)?)?;
+            fs::write(settings_path, serde_json::to_string_pretty(&settings)?)?;
             tracing::info!(
                 "Created Claude Code settings with OTEL enabled at {:?}",
                 settings_path
@@ -136,22 +155,18 @@ impl Provider for ClaudeCodeProvider {
             return Ok(true);
         }
 
-        // Read existing settings
         let content =
-            fs::read_to_string(&settings_path).context("Failed to read Claude settings")?;
-
+            fs::read_to_string(settings_path).context("Failed to read Claude settings")?;
         let mut settings: serde_json::Value =
             serde_json::from_str(&content).context("Failed to parse Claude settings")?;
 
         let mut modified = false;
 
-        // Check if enableTelemetry is set
         if settings.get("enableTelemetry") != Some(&serde_json::Value::Bool(true)) {
             settings["enableTelemetry"] = serde_json::Value::Bool(true);
             modified = true;
         }
 
-        // Check if env block exists and has correct OTEL settings
         let env_block = settings.get("env");
         let needs_env_update = match env_block {
             None => true,
@@ -170,7 +185,6 @@ impl Provider for ClaudeCodeProvider {
         };
 
         if needs_env_update {
-            // Create or update env block
             if settings.get("env").is_none() {
                 settings["env"] = serde_json::json!({});
             }
@@ -188,27 +202,25 @@ impl Provider for ClaudeCodeProvider {
             modified = true;
         }
 
-        // Remove old-style telemetry block if present (migrate to env format)
+        // Migrate from old-style top-level `telemetry` block to the env block.
         if settings.get("telemetry").is_some() && settings.as_object_mut().is_some() {
             settings.as_object_mut().unwrap().remove("telemetry");
             modified = true;
             tracing::info!("Migrated from old telemetry format to env block format");
         }
 
-        if modified {
-            // Backup existing settings
-            let backup_path = settings_path.with_extension("json.bak");
-            fs::copy(&settings_path, &backup_path)?;
-            tracing::info!("Backed up settings to {:?}", backup_path);
-
-            // Write updated settings
-            fs::write(&settings_path, serde_json::to_string_pretty(&settings)?)?;
-            tracing::info!("Updated Claude Code settings with OTEL env configuration");
-            return Ok(true);
+        if !modified {
+            tracing::debug!("Claude Code OTEL already configured correctly");
+            return Ok(false);
         }
 
-        tracing::debug!("Claude Code OTEL already configured correctly");
-        Ok(false)
+        let backup_path = settings_path.with_extension("json.bak");
+        fs::copy(settings_path, &backup_path)?;
+        tracing::info!("Backed up settings to {:?}", backup_path);
+
+        fs::write(settings_path, serde_json::to_string_pretty(&settings)?)?;
+        tracing::info!("Updated Claude Code settings with OTEL env configuration");
+        Ok(true)
     }
 }
 

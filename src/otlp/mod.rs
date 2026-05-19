@@ -8,14 +8,20 @@ pub mod parser;
 
 pub use parser::*;
 
-pub async fn start_receiver(storage: StorageHandle) -> Result<()> {
-    let app = Router::new()
+/// Build the OTLP receiver router. Exposed publicly so integration tests
+/// can drive the receiver via `tower::ServiceExt::oneshot` without binding
+/// a real TCP socket.
+pub fn build_router(storage: StorageHandle) -> Router {
+    Router::new()
         .route("/v1/metrics", post(handle_metrics))
         .route("/v1/logs", post(handle_logs))
         .route("/v1/traces", post(handle_traces))
         .layer(CorsLayer::permissive())
-        .with_state(storage);
+        .with_state(storage)
+}
 
+pub async fn start_receiver(storage: StorageHandle) -> Result<()> {
+    let app = build_router(storage);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:4318").await?;
     tracing::info!("OTLP receiver listening on http://127.0.0.1:4318");
 

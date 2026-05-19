@@ -490,6 +490,403 @@ fn test_multiple_tool_events() {
     assert_eq!(write_metrics.error_count, 1);
 }
 
+/// Round-trip realistic Claude Code shaped events through storage and
+/// verify approval counts surface in `ToolMetrics`. This is the regression
+/// guard for the bug where the SQL was querying `$.decision` on
+/// `tool_result` (always NULL) — real Claude Code emits `decision_type`
+/// on `tool_result` for accepts and a separate `tool_decision` event
+/// (with `decision` attribute) for both accepts and rejects.
+#[test]
+fn test_approval_rate_from_real_event_shape() {
+    use agenttop::storage::{LogEvent, StorageHandle};
+
+    let storage = StorageHandle::new_in_memory().unwrap();
+
+    // Helper to build a tool_result event with decision_type=accept.
+    let result_event = |tool: &str, tool_use_id: &str| {
+        let mut attrs = HashMap::new();
+        attrs.insert("tool_name".to_string(), tool.to_string());
+        attrs.insert("success".to_string(), "true".to_string());
+        attrs.insert("duration_ms".to_string(), "100".to_string());
+        attrs.insert("decision_type".to_string(), "accept".to_string());
+        attrs.insert("tool_use_id".to_string(), tool_use_id.to_string());
+        LogEvent {
+            timestamp: Utc::now(),
+            event_name: Some("tool_result".to_string()),
+            body: None,
+            attributes: attrs,
+        }
+    };
+
+    // Helper to build a tool_decision event.
+    let decision_event = |tool: &str, decision: &str, tool_use_id: &str| {
+        let mut attrs = HashMap::new();
+        attrs.insert("tool_name".to_string(), tool.to_string());
+        attrs.insert("decision".to_string(), decision.to_string());
+        attrs.insert("tool_use_id".to_string(), tool_use_id.to_string());
+        LogEvent {
+            timestamp: Utc::now(),
+            event_name: Some("tool_decision".to_string()),
+            body: None,
+            attributes: attrs,
+        }
+    };
+
+    // Scenario:
+    //   Bash: 3 accepts (3 tool_result + 3 tool_decision) + 1 reject
+    //         (tool_decision only, no tool_result — the rejected one never executed).
+    //   mcp__context7__resolve-library-id: 2 accepts (full name on tool_result,
+    //         tool_decision uses "mcp_tool" → reconciled via tool_use_id).
+    //   Read: 1 accept, no tool_decision event (auto-approved variant).
+    storage.record_log_events(vec![
+        // Bash accepts
+        result_event("Bash", "bash-1"),
+        decision_event("Bash", "accept", "bash-1"),
+        result_event("Bash", "bash-2"),
+        decision_event("Bash", "accept", "bash-2"),
+        result_event("Bash", "bash-3"),
+        decision_event("Bash", "accept", "bash-3"),
+        // Bash reject — no tool_result, only tool_decision
+        decision_event("Bash", "reject", "bash-rejected-99"),
+        // MCP: tool_result has full name, tool_decision has "mcp_tool"
+        result_event("mcp__context7__resolve-library-id", "mcp-1"),
+        decision_event("mcp_tool", "accept", "mcp-1"),
+        result_event("mcp__context7__resolve-library-id", "mcp-2"),
+        decision_event("mcp_tool", "accept", "mcp-2"),
+        // Read auto-approved, no tool_decision
+        result_event("Read", "read-1"),
+    ]);
+    std::thread::sleep(std::time::Duration::from_millis(150));
+
+    let metrics = storage.get_tool_metrics(None).unwrap();
+
+    let bash = metrics
+        .iter()
+        .find(|m| m.tool_name == "Bash")
+        .expect("Bash metrics present");
+    assert_eq!(bash.call_count, 3, "Bash executed 3 times");
+    assert_eq!(
+        bash.approved_count, 3,
+        "Bash had 3 accepts via tool_decision"
+    );
+    assert_eq!(
+        bash.rejected_count, 1,
+        "Bash had 1 reject — must come from tool_decision because rejects have no tool_result"
+    );
+    // Approval rate: 3 / (3 + 1) = 75%
+    assert!(
+        (bash.approval_rate() - 75.0).abs() < 0.5,
+        "Bash approval rate should be 75%, got {}",
+        bash.approval_rate()
+    );
+
+    let mcp = metrics
+        .iter()
+        .find(|m| m.tool_name == "mcp__context7__resolve-library-id")
+        .expect(
+            "MCP tool present under full name (reconciled via tool_use_id, NOT under 'mcp_tool')",
+        );
+    assert_eq!(mcp.call_count, 2);
+    assert_eq!(
+        mcp.approved_count, 2,
+        "MCP accepts must be credited to the proper name via tool_use_id join"
+    );
+    assert_eq!(mcp.rejected_count, 0);
+
+    // No phantom "mcp_tool" row from the tool_decision side leaking through.
+    assert!(
+        !metrics.iter().any(|m| m.tool_name == "mcp_tool"),
+        "raw 'mcp_tool' name should be resolved away when a matching tool_result exists"
+    );
+
+    let read = metrics
+        .iter()
+        .find(|m| m.tool_name == "Read")
+        .expect("Read metrics present");
+    assert_eq!(read.call_count, 1);
+    assert_eq!(read.approved_count, 0, "no tool_decision events for Read");
+    assert_eq!(read.rejected_count, 0);
+    // approval_rate() falls back to 100% when both counts are 0 (no data).
+    assert!((read.approval_rate() - 100.0).abs() < 0.5);
+}
+
+// =============================================================================
+// Time-filter coverage (every getter that takes Option<DateTime<Utc>>)
+//
+// The TUI defaults to AllTime (since=None) so the WHERE-clause path was
+// historically unexercised. This caused two real bugs that escaped to
+// production: token-rate sparkline returned all zeros, and a deeper SQL
+// type-coercion issue lurked behind it. Tests below pin the contract for
+// each filtered getter.
+// =============================================================================
+
+fn put_log_event(
+    storage: &agenttop::storage::StorageHandle,
+    event_name: &str,
+    attrs: &[(&str, &str)],
+    timestamp: chrono::DateTime<chrono::Utc>,
+) {
+    use agenttop::storage::LogEvent;
+    let mut a = HashMap::new();
+    for (k, v) in attrs {
+        a.insert(k.to_string(), v.to_string());
+    }
+    storage.record_log_events(vec![LogEvent {
+        timestamp,
+        event_name: Some(event_name.to_string()),
+        body: None,
+        attributes: a,
+    }]);
+}
+
+#[test]
+fn test_get_tool_metrics_time_filter_excludes_old_rows() {
+    use agenttop::storage::StorageHandle;
+    use chrono::Duration;
+
+    let storage = StorageHandle::new_in_memory().unwrap();
+    put_log_event(
+        &storage,
+        "tool_result",
+        &[
+            ("tool_name", "Bash"),
+            ("success", "true"),
+            ("duration_ms", "100"),
+        ],
+        Utc::now() - Duration::seconds(300),
+    );
+    put_log_event(
+        &storage,
+        "tool_result",
+        &[
+            ("tool_name", "Bash"),
+            ("success", "true"),
+            ("duration_ms", "100"),
+        ],
+        Utc::now() - Duration::seconds(10),
+    );
+    std::thread::sleep(std::time::Duration::from_millis(150));
+
+    let recent = storage
+        .get_tool_metrics(Some(Utc::now() - Duration::seconds(60)))
+        .unwrap();
+    let bash = recent.iter().find(|t| t.tool_name == "Bash").unwrap();
+    assert_eq!(bash.call_count, 1, "only recent row inside the window");
+
+    let all = storage.get_tool_metrics(None).unwrap();
+    let bash_all = all.iter().find(|t| t.tool_name == "Bash").unwrap();
+    assert_eq!(bash_all.call_count, 2, "both rows visible without filter");
+}
+
+#[test]
+fn test_get_api_metrics_time_filter() {
+    use agenttop::storage::StorageHandle;
+    use chrono::Duration;
+
+    let storage = StorageHandle::new_in_memory().unwrap();
+    put_log_event(
+        &storage,
+        "api_request",
+        &[("model", "sonnet"), ("latency_ms", "200")],
+        Utc::now() - Duration::seconds(300),
+    );
+    put_log_event(
+        &storage,
+        "api_request",
+        &[("model", "sonnet"), ("latency_ms", "100")],
+        Utc::now() - Duration::seconds(5),
+    );
+    std::thread::sleep(std::time::Duration::from_millis(150));
+
+    let recent = storage
+        .get_api_metrics(Some(Utc::now() - Duration::seconds(60)))
+        .unwrap();
+    assert_eq!(recent.total_calls, 1);
+
+    let all = storage.get_api_metrics(None).unwrap();
+    assert_eq!(all.total_calls, 2);
+}
+
+#[test]
+fn test_get_distinct_sessions_time_filter() {
+    use agenttop::storage::StorageHandle;
+    use chrono::Duration;
+
+    let storage = StorageHandle::new_in_memory().unwrap();
+    put_log_event(
+        &storage,
+        "tool_result",
+        &[("session.id", "session-old")],
+        Utc::now() - Duration::seconds(300),
+    );
+    put_log_event(
+        &storage,
+        "tool_result",
+        &[("session.id", "session-new")],
+        Utc::now() - Duration::seconds(5),
+    );
+    std::thread::sleep(std::time::Duration::from_millis(150));
+
+    let recent = storage
+        .get_distinct_sessions(Some(Utc::now() - Duration::seconds(60)))
+        .unwrap();
+    assert_eq!(recent.len(), 1);
+    assert_eq!(recent[0].session_id, "session-new");
+}
+
+#[test]
+fn test_get_distinct_service_names_time_filter() {
+    use agenttop::storage::StorageHandle;
+    use chrono::Duration;
+
+    let storage = StorageHandle::new_in_memory().unwrap();
+    put_log_event(
+        &storage,
+        "tool_result",
+        &[("service.name", "claude-code")],
+        Utc::now() - Duration::seconds(300),
+    );
+    put_log_event(
+        &storage,
+        "tool_result",
+        &[("service.name", "gemini-cli")],
+        Utc::now() - Duration::seconds(5),
+    );
+    std::thread::sleep(std::time::Duration::from_millis(150));
+
+    let recent = storage
+        .get_distinct_service_names(Some(Utc::now() - Duration::seconds(60)))
+        .unwrap();
+    assert_eq!(recent, vec!["gemini-cli".to_string()]);
+}
+
+#[test]
+fn test_get_compaction_stats_time_filter() {
+    use agenttop::storage::StorageHandle;
+    use chrono::Duration;
+
+    let storage = StorageHandle::new_in_memory().unwrap();
+    put_log_event(
+        &storage,
+        "claude_code.compaction",
+        &[("pre_tokens", "180000"), ("post_tokens", "80000")],
+        Utc::now() - Duration::seconds(300),
+    );
+    put_log_event(
+        &storage,
+        "claude_code.compaction",
+        &[("pre_tokens", "120000"), ("post_tokens", "60000")],
+        Utc::now() - Duration::seconds(5),
+    );
+    std::thread::sleep(std::time::Duration::from_millis(150));
+
+    let recent = storage
+        .get_compaction_stats(Some(Utc::now() - Duration::seconds(60)))
+        .unwrap();
+    assert_eq!(recent.count, 1);
+    assert_eq!(recent.last_pre_tokens, Some(120_000));
+    assert_eq!(recent.last_post_tokens, Some(60_000));
+
+    let all = storage.get_compaction_stats(None).unwrap();
+    assert_eq!(all.count, 2);
+}
+
+// =============================================================================
+// Empty-database safety: every getter on a fresh in-memory DB.
+//
+// Catches the "silent panic" class of bug — e.g. a `query_row` that errors
+// on empty results without graceful handling.
+// =============================================================================
+
+#[test]
+fn test_all_getters_safe_on_empty_db() {
+    use agenttop::storage::StorageHandle;
+
+    let storage = StorageHandle::new_in_memory().unwrap();
+
+    let tool = storage.get_tool_metrics(None).unwrap();
+    assert!(tool.is_empty());
+
+    let token = storage.get_token_metrics(None).unwrap();
+    assert_eq!(token.input_tokens, 0);
+    assert_eq!(token.total_cost_usd, 0.0);
+
+    let session = storage.get_session_metrics(None).unwrap();
+    assert_eq!(session.active_time_secs, 0);
+
+    let api = storage.get_api_metrics(None).unwrap();
+    assert_eq!(api.total_calls, 0);
+
+    let sessions = storage.get_distinct_sessions(None).unwrap();
+    assert!(sessions.is_empty());
+
+    let services = storage.get_distinct_service_names(None).unwrap();
+    assert!(services.is_empty());
+
+    let comp = storage.get_compaction_stats(None).unwrap();
+    assert_eq!(comp.count, 0);
+
+    let rate = storage.get_token_rate_series(300, 60).unwrap();
+    assert_eq!(rate.len(), 60);
+    assert!(rate.iter().all(|&v| v == 0.0));
+}
+
+// =============================================================================
+// Token-rate sparkline boundary regression
+//
+// The original implementation dropped rows whose elapsed-time was exactly
+// `window_secs` because the bucket index hit `points` (out of range). Fix:
+// `idx.min(points - 1)` and millisecond-precision timestamps.
+// =============================================================================
+
+#[test]
+fn test_token_rate_series_boundary_row_included() {
+    use agenttop::storage::StorageHandle;
+
+    let storage = StorageHandle::new_in_memory().unwrap();
+    storage.record_token_usage("input", 500);
+    storage.record_token_usage("output", 500);
+    std::thread::sleep(std::time::Duration::from_millis(150));
+
+    let series = storage.get_token_rate_series(60, 12).unwrap();
+    let bucket_secs = 60.0 / 12.0;
+    let total: f64 = series.iter().map(|r| r * bucket_secs).sum();
+    assert!(
+        (total - 1000.0).abs() < 0.5,
+        "all 1000 tokens must be counted regardless of bucket boundary, got {}",
+        total
+    );
+}
+
+#[test]
+fn test_token_rate_series_distributes_across_buckets() {
+    use agenttop::storage::StorageHandle;
+
+    let storage = StorageHandle::new_in_memory().unwrap();
+    // 100 tokens at multiple distinct timestamps — should distribute across
+    // buckets, not stack into one.
+    storage.record_token_usage("input", 100);
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    storage.record_token_usage("input", 100);
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    storage.record_token_usage("input", 100);
+    std::thread::sleep(std::time::Duration::from_millis(150));
+
+    // Wide window → all three rows are well inside.
+    let series = storage.get_token_rate_series(600, 60).unwrap();
+    let nonzero_buckets = series.iter().filter(|&&v| v > 0.0).count();
+    // Could be 1-3 depending on timing; the key invariant is that no rows
+    // were dropped.
+    let bucket_secs = 600.0 / 60.0;
+    let total: f64 = series.iter().map(|r| r * bucket_secs).sum();
+    assert!(
+        (total - 300.0).abs() < 1.0,
+        "total tokens preserved across buckets, got {} (nonzero={})",
+        total,
+        nonzero_buckets
+    );
+}
+
 /// Test recording token usage
 #[test]
 fn test_token_usage_recording() {
