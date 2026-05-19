@@ -18,7 +18,7 @@
 [![Ratatui](https://img.shields.io/badge/TUI-Ratatui-blue.svg)](https://ratatui.rs/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-[Installation](#installation) • [Usage](#usage) • [Features](#features) • [How It Works](#how-it-works)
+[Quick Start](#quick-start) • [Features](#features) • [Configuration](#configuration) • [How It Works](#how-it-works)
 
 </div>
 
@@ -27,6 +27,23 @@
 A terminal-native observability dashboard for AI coding agents. Real-time visibility into tool usage, token consumption, and productivity metrics.
 
 <img src="./docs/preview.png" />
+
+## Quick Start
+
+```bash
+# macOS
+brew install tech4242/agenttop/agenttop
+
+# Linux (downloads matching binary to ~/.local/bin)
+curl -fsSL https://raw.githubusercontent.com/tech4242/agenttop/main/scripts/install.sh | sh
+
+# Run it — auto-configures Claude Code, opens the dashboard
+agenttop
+```
+
+That's it. agenttop detects Claude Code, writes the right OTEL env vars into `~/.claude/settings.json` (with a `.bak` first), starts the OTLP receiver on port 4318, and renders the TUI. On the next prompt to Claude, tool calls + token usage start streaming in.
+
+Other agents (Codex, Gemini, Qwen, Cline, Copilot Chat, opencode) need a one-time setup — see [Configuration](#configuration).
 
 ## Origin Story
 
@@ -126,13 +143,19 @@ schema (please report).
 - **Productivity Metrics** - Lines of code, commits
 - **Cache Reuse Rate** - Prompt caching efficiency
 
-## Installation
+## Other install methods
 
-### Cargo
+The [Quick Start](#quick-start) covers brew (macOS) and the `install.sh` script (Linux). If you want something else, the options below all work.
 
-Not published yet but you can run `cargo install --git https://github.com/tech4242/agenttop`
+### Cargo (from source)
 
-### Pre-built Binaries
+```bash
+cargo install --git https://github.com/tech4242/agenttop
+```
+
+Not published to crates.io yet — tracked on the roadmap.
+
+### Pre-built binaries (direct download)
 
 Download from [GitHub Releases](https://github.com/tech4242/agenttop/releases), or use curl:
 

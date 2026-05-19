@@ -54,10 +54,88 @@ jobs:
           tar -czvf ${{ matrix.artifact }}.tar.gz agenttop
           mv ${{ matrix.artifact }}.tar.gz ../../../
 
-      - name: Upload Release Asset
+      - name: Compute SHA256
+        run: |
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum ${{ matrix.artifact }}.tar.gz > ${{ matrix.artifact }}.tar.gz.sha256
+          else
+            shasum -a 256 ${{ matrix.artifact }}.tar.gz > ${{ matrix.artifact }}.tar.gz.sha256
+          fi
+          cat ${{ matrix.artifact }}.tar.gz.sha256
+
+      - name: Upload Release Assets
         uses: softprops/action-gh-release@v1
         with:
-          files: ${{ matrix.artifact }}.tar.gz
+          files: |
+            ${{ matrix.artifact }}.tar.gz
+            ${{ matrix.artifact }}.tar.gz.sha256
+
+  publish-homebrew:
+    name: Publish Homebrew formula
+    runs-on: ubuntu-latest
+    needs: build-release
+    # Requires HOMEBREW_TAP_TOKEN secret: a PAT with `repo` scope on
+    # tech4242/homebrew-agenttop. Skips silently if the secret isn't set
+    # so releases can ship even before the tap repo is wired up.
+    if: ${{ github.event.release.tag_name != '' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve version + SHAs
+        id: meta
+        run: |
+          TAG="${{ github.event.release.tag_name }}"
+          VERSION="${TAG#v}"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Resolved version: $VERSION"
+
+          mkdir -p /tmp/shas
+          for artifact in agenttop-darwin-arm64 agenttop-darwin-x86_64 agenttop-linux-aarch64 agenttop-linux-x86_64; do
+            url="https://github.com/${{ github.repository }}/releases/download/${TAG}/${artifact}.tar.gz.sha256"
+            echo "Fetching $url"
+            # The .sha256 file format is "<hash>  <filename>", take just the hash.
+            curl -fsSL "$url" | awk '{print $1}' > "/tmp/shas/${artifact}.sha"
+          done
+
+          echo "darwin_arm64=$(cat /tmp/shas/agenttop-darwin-arm64.sha)" >> "$GITHUB_OUTPUT"
+          echo "darwin_x86_64=$(cat /tmp/shas/agenttop-darwin-x86_64.sha)" >> "$GITHUB_OUTPUT"
+          echo "linux_aarch64=$(cat /tmp/shas/agenttop-linux-aarch64.sha)" >> "$GITHUB_OUTPUT"
+          echo "linux_x86_64=$(cat /tmp/shas/agenttop-linux-x86_64.sha)" >> "$GITHUB_OUTPUT"
+
+      - name: Render formula
+        run: |
+          mkdir -p /tmp/rendered
+          sed \
+            -e "s/REPLACE_VERSION/${{ steps.meta.outputs.version }}/g" \
+            -e "s/REPLACE_SHA256_DARWIN_ARM64/${{ steps.meta.outputs.darwin_arm64 }}/g" \
+            -e "s/REPLACE_SHA256_DARWIN_X86_64/${{ steps.meta.outputs.darwin_x86_64 }}/g" \
+            -e "s/REPLACE_SHA256_LINUX_AARCH64/${{ steps.meta.outputs.linux_aarch64 }}/g" \
+            -e "s/REPLACE_SHA256_LINUX_X86_64/${{ steps.meta.outputs.linux_x86_64 }}/g" \
+            homebrew/agenttop.rb > /tmp/rendered/agenttop.rb
+          echo "--- rendered formula ---"
+          cat /tmp/rendered/agenttop.rb
+
+      - name: Push to tap repo
+        env:
+          TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          if [ -z "${TAP_TOKEN:-}" ]; then
+            echo "::warning::HOMEBREW_TAP_TOKEN not set — skipping tap update. Add the secret to publish."
+            exit 0
+          fi
+          git clone "https://x-access-token:${TAP_TOKEN}@github.com/tech4242/homebrew-agenttop.git" /tmp/tap
+          mkdir -p /tmp/tap/Formula
+          cp /tmp/rendered/agenttop.rb /tmp/tap/Formula/agenttop.rb
+          cd /tmp/tap
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if git diff --quiet; then
+            echo "Formula unchanged — nothing to push."
+            exit 0
+          fi
+          git add Formula/agenttop.rb
+          git commit -m "agenttop ${{ steps.meta.outputs.version }}"
+          git push
 
   # publish-crates:
   #   name: Publish to crates.io
